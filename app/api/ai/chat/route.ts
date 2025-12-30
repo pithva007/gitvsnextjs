@@ -19,16 +19,15 @@ export async function POST(request: NextRequest) {
     const repository = await repositoryService.getRepository(repositoryId, user.userId)
 
     if (!repository) {
-      return NextResponse.json(
-        { error: 'Repository not found' },
-        { status: 404 }
-      )
+      return NextResponse.json({ error: 'Repository not found' }, { status: 404 })
     }
 
     const context = {
-      files: repository.files.slice(0, 20).map((f) => f.path),
-      recentCommits: repository.commits.slice(0, 5).map((c) => `${c.shortHash}: ${c.message}`),
-      contributors: repository.contributors.map((c) => c.name),
+      files: repository.files.slice(0, 20).map((f: { path: string }) => f.path),
+      recentCommits: repository.commits
+        .slice(0, 5)
+        .map((c: { shortHash: string; message: string }) => `${c.shortHash}: ${c.message}`),
+      contributors: repository.contributors.map((c: { name: string }) => c.name),
     }
 
     const response = await geminiService.chatAboutRepository({
