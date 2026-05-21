@@ -311,9 +311,28 @@ export function AIRepoMentorSection(props: {
             }}
           >
             {messages.length === 1 && !isLoading && (
-              <div className="text-center text-xs text-muted-foreground py-6">
-                Ask a question about the repository to get started
-              </div>
+              <div className="flex flex-col items-center justify-center text-center py-8 px-4">
+  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 mb-4">
+    <Sparkles className="h-6 w-6 text-primary" />
+  </div>
+
+  <h3 className="text-sm font-semibold mb-2">
+    No repository questions yet
+  </h3>
+
+  <p className="text-xs text-muted-foreground max-w-sm mb-4">
+    Ask about setup, architecture, contributors, scripts, or repository structure to start using the AI mentor.
+  </p>
+
+  <Button
+    type="button"
+    variant="outline"
+    onClick={() => send("How do I set this up locally?")}
+    disabled={props.disabled || isLoading}
+  >
+    Try Example Question
+  </Button>
+</div>
             )}
             {messages.map((m, idx) => (
               <div
