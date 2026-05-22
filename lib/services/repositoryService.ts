@@ -1,5 +1,6 @@
 import prisma from "../prisma";
 import { GitService } from "./gitService";
+import { GitHubService } from "./githubService";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
@@ -128,6 +129,30 @@ export class RepositoryService {
       throw new Error("Repository not found");
     }
 
+    const parsed = GitHubService.parseGitHubUrl(repository.url);
+    if (parsed) {
+      const account = await prisma.gitHubAccount.findUnique({
+        where: { userId },
+        select: { accessToken: true },
+      });
+
+      if (account?.accessToken) {
+        const github = new GitHubService(account.accessToken);
+        const readme = await github.getReadme(parsed.owner, parsed.repo);
+
+        const updated = await prisma.repository.update({
+          where: { id: repositoryId },
+          data: {
+            readmePath: readme?.path ?? "README.md",
+            readmeText: readme?.text ?? "doesnt exist",
+            readmeFetchedAt: new Date(),
+          },
+        });
+
+        return updated;
+      }
+    }
+
     const tempDir = path.join(
       os.tmpdir(),
       "gitverse",
@@ -137,7 +162,6 @@ export class RepositoryService {
     let gitService: GitService | null = null;
 
     try {
-      // For README we don't need all branches; keep it lightweight.
       gitService = await GitService.cloneRepository(repository.url, tempDir, {
         depth: 1,
         noSingleBranch: false,

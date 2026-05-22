@@ -600,6 +600,44 @@ export class GitHubService {
       return false;
     }
   }
+
+  /**
+   * Fetch repository README via GitHub API
+   */
+  async getReadme(
+    owner: string,
+    repo: string,
+  ): Promise<{ path: string; text: string } | null> {
+    try {
+      const response = await this.client.get(`/repos/${owner}/${repo}/readme`);
+      const data = response.data as {
+        path: string;
+        content: string;
+        encoding: string;
+      };
+
+      if (!data || !data.content) return null;
+
+      const decoded =
+        data.encoding === "base64"
+          ? Buffer.from(data.content, "base64").toString("utf8")
+          : data.content;
+
+      const trimmed = decoded.trim();
+      if (!trimmed) return null;
+
+      const maxChars = 200_000;
+      const safeText =
+        trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
+
+      return { path: data.path, text: safeText };
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return null;
+      }
+      throw sanitizeGitHubError(error);
+    }
+  }
 }
 
 export const githubService = new GitHubService();
