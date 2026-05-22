@@ -9,11 +9,11 @@ export async function GET(
 ) {
   try {
     const user = await requireAuth(request);
-    const id = parseInt(params.id);
+    const id = Number(params.id);
 
-    if (isNaN(id)) {
+    if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json(
-        { error: "Invalid repository ID" },
+        { error: "Invalid repository ID. Must be a positive integer." },
         { status: 400 }
       );
     }
@@ -79,11 +79,11 @@ export async function DELETE(
 ) {
   try {
     const user = await requireAuth(request);
-    const id = parseInt(params.id);
+    const id = Number(params.id);
 
-    if (isNaN(id)) {
+    if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json(
-        { error: "Invalid repository ID" },
+        { error: "Invalid repository ID. Must be a positive integer." },
         { status: 400 }
       );
     }
@@ -110,6 +110,10 @@ export async function DELETE(
         { error: error.message },
         { status: error.status }
       );
+    }
+
+    if (error?.message === "Repository not found") {
+      return NextResponse.json({ error: error.message }, { status: 404 });
     }
 
     return NextResponse.json(
