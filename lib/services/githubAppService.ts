@@ -1,5 +1,6 @@
 import axios, { isAxiosError } from "axios";
 import jwt from "jsonwebtoken";
+import { withRetry } from "../utils/rateLimit";
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -56,28 +57,39 @@ export class GitHubAppService {
       throw new Error("installationId must be a number");
     }
 
-    const appJwt = this.createAppJwt();
-    try {
-      const response = await axios.post(
-        `https://api.github.com/app/installations/${installationId}/access_tokens`,
-        {},
-        {
-          headers: {
-            Authorization: `Bearer ${appJwt}`,
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        },
-      );
+    return withRetry(
+      async () => {
+        const appJwt = this.createAppJwt();
+        try {
+          const response = await axios.post(
+            `https://api.github.com/app/installations/${installationId}/access_tokens`,
+            {},
+            {
+              headers: {
+                Authorization: `Bearer ${appJwt}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            },
+          );
 
-      const token = response.data?.token as string | undefined;
-      if (!token) {
-        throw new Error("Failed to obtain installation access token");
-      }
-      return token;
-    } catch (err) {
-      throw sanitizeAppError(err);
-    }
+          const token = response.data?.token as string | undefined;
+          if (!token) {
+            throw new Error("Failed to obtain installation access token");
+          }
+          return token;
+        } catch (err) {
+          throw sanitizeAppError(err);
+        }
+      },
+      {
+        maxRetries: 4,
+        onRetry: (attempt, _err, delayMs) =>
+          console.warn(
+            `[GitHubAppService] getInstallationAccessToken retry ${attempt}/4 in ${Math.round(delayMs)}ms (installationId=${installationId})`,
+          ),
+      },
+    );
   }
 
   async uninstallInstallation(installationId: number): Promise<void> {
@@ -85,20 +97,31 @@ export class GitHubAppService {
       throw new Error("installationId must be a number");
     }
 
-    const appJwt = this.createAppJwt();
-    try {
-      await axios.delete(
-        `https://api.github.com/app/installations/${installationId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${appJwt}`,
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        },
-      );
-    } catch (err) {
-      throw sanitizeAppError(err);
-    }
+    return withRetry(
+      async () => {
+        const appJwt = this.createAppJwt();
+        try {
+          await axios.delete(
+            `https://api.github.com/app/installations/${installationId}`,
+            {
+              headers: {
+                Authorization: `Bearer ${appJwt}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            },
+          );
+        } catch (err) {
+          throw sanitizeAppError(err);
+        }
+      },
+      {
+        maxRetries: 4,
+        onRetry: (attempt, _err, delayMs) =>
+          console.warn(
+            `[GitHubAppService] uninstallInstallation retry ${attempt}/4 in ${Math.round(delayMs)}ms (installationId=${installationId})`,
+          ),
+      },
+    );
   }
 }

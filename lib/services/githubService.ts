@@ -172,11 +172,16 @@ export class GitHubService {
 
         config.retryCount = config.retryCount || 0;
 
+        /** Maximum number of retries for any category. */
+        const MAX_RETRIES = 4;
+        /** Hard ceiling on any single delay to keep within Vercel's 10 s limit. */
+        const MAX_DELAY_MS = 7_500;
+
         const isRateLimit = status === 429 || status === 403;
         if (isRateLimit) {
           const rateLimitRemaining = error.response?.headers?.["x-ratelimit-remaining"];
           if (status === 429 || rateLimitRemaining === "0") {
-            if (config.retryCount >= 3) {
+            if (config.retryCount >= MAX_RETRIES) {
               const retryAfterHeader = error.response?.headers?.["retry-after"];
               const resetHeader = error.response?.headers?.["x-ratelimit-reset"];
               let retrySeconds = 60;
@@ -190,7 +195,15 @@ export class GitHubService {
               throw new GitHubRateLimitError(retrySeconds);
             }
             config.retryCount += 1;
-            const delayMs = getRetryDelayMs(error, config.retryCount) ?? 1000;
+
+            // Prefer server-supplied delay, fall back to jittered exponential backoff.
+            const rawDelay = getRetryDelayMs(error, config.retryCount) ?? 1000;
+            const jitter = Math.random() * 200;
+            const delayMs = Math.min(rawDelay + jitter, MAX_DELAY_MS);
+
+            console.warn(
+              `[GitHubService] Rate limited — retry ${config.retryCount}/${MAX_RETRIES} in ${Math.round(delayMs)}ms`,
+            );
             await new Promise((resolve) => setTimeout(resolve, delayMs));
             return this.client(config);
           }
@@ -204,9 +217,15 @@ export class GitHubService {
           error.code === "ETIMEDOUT" ||
           !error.response
         ) {
-          if (config.retryCount < 3) {
+          if (config.retryCount < MAX_RETRIES) {
             config.retryCount += 1;
-            const backoff = Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000;
+            const backoff = Math.min(
+              Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000,
+              MAX_DELAY_MS,
+            );
+            console.warn(
+              `[GitHubService] Network error (${status ?? error.code}) — retry ${config.retryCount}/${MAX_RETRIES} in ${Math.round(backoff)}ms`,
+            );
             await new Promise((resolve) => setTimeout(resolve, backoff));
             return this.client(config);
           }
