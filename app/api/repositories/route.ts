@@ -9,7 +9,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { name, url, description } = body;
 
-    console.log("Create repository request:", {
+    console.info("Create repository request:", {
       name,
       url,
       userId: user.userId,
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
       userId: user.userId,
     });
 
-    console.log("Repository created:", repository.id);
+    console.info("Repository created:", repository.id);
 
     const job = await analysisJobService.createRepositoryAnalysisJob({
       repositoryId: repository.id,
@@ -51,7 +51,6 @@ export async function POST(request: NextRequest) {
     );
   } catch (error: any) {
     console.error("Create repository error:", error);
-    console.error("Error stack:", error.stack);
     if (isHttpError(error)) {
       if (error.status === 401) return unauthorizedResponse(error.message);
       if (error.status === 403) return forbiddenResponse(error.message);
