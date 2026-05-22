@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import prisma from "@/lib/prisma";
+import { isHttpError, requireAuth } from "@/lib/middleware";
 import { repositoryService } from "@/lib/services/repositoryService";
 
 export async function GET(
@@ -9,11 +10,11 @@ export async function GET(
 ) {
   try {
     const user = await requireAuth(request);
-    const id = parseInt(params.id);
+    const id = Number(params.id);
 
-    if (isNaN(id)) {
+    if (!Number.isInteger(id) || id <= 0) {
       return NextResponse.json(
-        { error: "Invalid repository ID" },
+        { error: "Invalid repository ID. Must be a positive integer." },
         { status: 400 }
       );
     }
@@ -42,6 +43,8 @@ export async function GET(
     }
     if (error.message === "Repository not found") {
       return notFoundResponse(error.message);
+    if (error?.message === "Repository not found") {
+      return NextResponse.json({ error: error.message }, { status: 404 });
     }
     return NextResponse.json(
       { error: "An unexpected error occurred" },
