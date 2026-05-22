@@ -60,6 +60,7 @@ model GitHubAccount {
   @@map("github_accounts")
 }
 
+
 model GitHubRepo {
   id           Int      @id @default(autoincrement())
   userId       Int      @map("user_id")
@@ -73,8 +74,10 @@ model GitHubRepo {
   pullRequests PullRequest[]
 
   @@unique([userId, repoFullName])
+  @@index([repoFullName, enabled, installationId])
   @@index([installationId])
   @@index([enabled])
+  @@index([updatedAt])
   @@map("github_repos")
 }
 
@@ -143,6 +146,7 @@ model Session {
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([expires])
   @@map("sessions")
 }
 
@@ -220,6 +224,7 @@ model AnalysisJob {
   @@index([lockExpiresAt])
   @@index([repositoryId])
   @@index([userId])
+  @@index([status, lockExpiresAt, nextRunAt])
   @@map("analysis_jobs")
 }
 
@@ -298,6 +303,7 @@ model FileChange {
   file      File?    @relation(fields: [fileId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now()) @map("created_at")
 
+  @@index([commitId])
   @@map("file_changes")
 }
 

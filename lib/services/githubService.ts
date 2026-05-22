@@ -1,23 +1,60 @@
 import axios, { AxiosError, AxiosInstance, isAxiosError } from "axios";
+import { getRetryDelayMs } from "@/lib/utils/rateLimit";
 
 export class GitHubRateLimitError extends Error {
   retryAfterSeconds: number;
   constructor(retryAfterSeconds: number) {
-    super(`GitHub API rate limit reached. Please retry after ${retryAfterSeconds} seconds.`);
+    super(
+      retryAfterSeconds > 0
+        ? `GitHub API rate limit reached. Please retry after ${retryAfterSeconds} seconds.`
+        : "GitHub API rate limit reached. Please try again later.",
+    );
     this.name = "GitHubRateLimitError";
     this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
+function sanitizeGitHubHeaders(headers: any): any {
+  if (headers == null) {
+    return headers;
+  }
+
+  if (Array.isArray(headers)) {
+    return headers.map((value) => sanitizeGitHubHeaders(value));
+  }
+
+  if (typeof headers !== "object") {
+    return headers;
+  }
+
+  const source =
+    typeof (headers as any).toJSON === "function" ? (headers as any).toJSON() : headers;
+
+  if (source == null || typeof source !== "object") {
+    return source;
+  }
+
+  const sanitized: Record<string, any> = Array.isArray(source) ? [] : {};
+
+  for (const [key, value] of Object.entries(source)) {
+    if (key.toLowerCase() === "authorization") {
+      sanitized[key] = "[REDACTED]";
+    } else if (value != null && typeof value === "object") {
+      sanitized[key] = sanitizeGitHubHeaders(value);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+
+  return sanitized;
+}
+
 export function sanitizeGitHubError(error: any) {
   if (isAxiosError(error) && error.config) {
-    const safeConfig = { ...error.config };
-    if (safeConfig.headers) {
-      safeConfig.headers = { ...safeConfig.headers };
-      if (safeConfig.headers.Authorization) {
-        safeConfig.headers.Authorization = "[REDACTED]";
-      }
-    }
+    const safeConfig = {
+      ...error.config,
+      headers: sanitizeGitHubHeaders(error.config.headers),
+    };
     error.config = safeConfig as any;
   }
   return error;
@@ -133,33 +170,44 @@ export class GitHubService {
         const status = error.response?.status;
         const config = error.config as any;
 
-        if (status === 429 || status === 403) {
+        config.retryCount = config.retryCount || 0;
+
+        const isRateLimit = status === 429 || status === 403;
+        if (isRateLimit) {
           const rateLimitRemaining = error.response?.headers?.["x-ratelimit-remaining"];
           if (status === 429 || rateLimitRemaining === "0") {
-            const retryAfterHeader = error.response?.headers?.["retry-after"];
-            const resetHeader = error.response?.headers?.["x-ratelimit-reset"];
-            let retrySeconds = 60;
+            if (config.retryCount >= 3) {
+              const retryAfterHeader = error.response?.headers?.["retry-after"];
+              const resetHeader = error.response?.headers?.["x-ratelimit-reset"];
+              let retrySeconds = 60;
 
-            if (retryAfterHeader) {
-              retrySeconds = parseInt(retryAfterHeader, 10);
-            } else if (resetHeader) {
-              const resetTime = parseInt(resetHeader, 10) * 1000;
-              retrySeconds = Math.max(1, Math.ceil((resetTime - Date.now()) / 1000));
+              if (retryAfterHeader) {
+                retrySeconds = parseInt(retryAfterHeader, 10);
+              } else if (resetHeader) {
+                const resetTime = parseInt(resetHeader, 10) * 1000;
+                retrySeconds = Math.max(1, Math.ceil((resetTime - Date.now()) / 1000));
+              }
+              throw new GitHubRateLimitError(retrySeconds);
             }
-            throw new GitHubRateLimitError(retrySeconds);
+            config.retryCount += 1;
+            const delayMs = getRetryDelayMs(error, config.retryCount) ?? 1000;
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            return this.client(config);
           }
         }
 
-        const retryStatusCodes = [502, 503, 504];
+        const retryStatusCodes = [409, 502, 503, 504];
         if (
-          (status && retryStatusCodes.includes(status)) ||
+          (status && retryableCodes.includes(status)) ||
           error.code === "ECONNABORTED" ||
+          error.code === "ECONNRESET" ||
+          error.code === "ETIMEDOUT" ||
           !error.response
         ) {
-          config.retryCount = config.retryCount || 0;
           if (config.retryCount < 3) {
             config.retryCount += 1;
             const backoff = Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000;
+            console.log(`Retrying GitHub API request ${config.url} (attempt ${config.retryCount}) due to ${status || error.code}...`);
             await new Promise((resolve) => setTimeout(resolve, backoff));
             return this.client(config);
           }
@@ -185,9 +233,25 @@ export class GitHubService {
   /**
    * Get repository information
    */
-  async getRepository(owner: string, repo: string): Promise<GitHubRepository> {
-    const response = await this.client.get(`/repos/${owner}/${repo}`);
-    return response.data;
+  async getRepository(owner: string, repo: string): Promise<GitHubRepository | null> {
+    try {
+      const response = await this.client.get(`/repos/${owner}/${repo}`);
+      const data = response.data as GitHubRepository;
+      
+      // Detect renamed repositories safely
+      const expectedFullName = `${owner}/${repo}`.toLowerCase();
+      if (data.full_name && data.full_name.toLowerCase() !== expectedFullName) {
+        console.warn(`GitHub repository renamed: requested ${expectedFullName}, but received ${data.full_name}`);
+      }
+      
+      return data;
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        console.warn(`GitHub repository not found (404): ${owner}/${repo}. It may have been deleted or access was lost.`);
+        return null;
+      }
+      throw sanitizeGitHubError(error);
+    }
   }
 
   /**
@@ -245,8 +309,15 @@ export class GitHubService {
    * Get repository branches
    */
   async getBranches(owner: string, repo: string): Promise<GitHubBranch[]> {
-    const response = await this.client.get(`/repos/${owner}/${repo}/branches`);
-    return response.data;
+    try {
+      const response = await this.client.get(`/repos/${owner}/${repo}/branches`);
+      return response.data;
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return [];
+      }
+      throw sanitizeGitHubError(error);
+    }
   }
 
   /**
@@ -262,16 +333,22 @@ export class GitHubService {
       page?: number;
     },
   ): Promise<GitHubCommit[]> {
-    const response = await this.client.get(`/repos/${owner}/${repo}/commits`, {
-      params: {
-        sha: params?.sha,
-        path: params?.path,
-        per_page: params?.per_page || 100,
-        page: params?.page || 1,
-      },
-    });
-
-    return response.data;
+    try {
+      const response = await this.client.get(`/repos/${owner}/${repo}/commits`, {
+        params: {
+          sha: params?.sha,
+          path: params?.path,
+          per_page: params?.per_page || 100,
+          page: params?.page || 1,
+        },
+      });
+      return response.data;
+    } catch (error) {
+      if (isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 409)) {
+        return []; // 409 Conflict means repository is empty
+      }
+      throw sanitizeGitHubError(error);
+    }
   }
 
   /**
@@ -281,11 +358,18 @@ export class GitHubService {
     owner: string,
     repo: string,
     sha: string,
-  ): Promise<GitHubCommit> {
-    const response = await this.client.get(
-      `/repos/${owner}/${repo}/commits/${sha}`,
-    );
-    return response.data;
+  ): Promise<GitHubCommit | null> {
+    try {
+      const response = await this.client.get(
+        `/repos/${owner}/${repo}/commits/${sha}`,
+      );
+      return response.data;
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return null;
+      }
+      throw sanitizeGitHubError(error);
+    }
   }
 
   /**
@@ -295,11 +379,18 @@ export class GitHubService {
     owner: string,
     repo: string,
     pullNumber: number,
-  ): Promise<GitHubPullRequest> {
-    const response = await this.client.get(
-      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
-    );
-    return response.data;
+  ): Promise<GitHubPullRequest | null> {
+    try {
+      const response = await this.client.get(
+        `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      );
+      return response.data;
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return null;
+      }
+      throw sanitizeGitHubError(error);
+    }
   }
 
   /**
@@ -315,21 +406,28 @@ export class GitHubService {
     const maxPages = Math.min(Math.max(params?.max_pages ?? 10, 1), 50);
 
     const all: GitHubPullRequestFile[] = [];
-    for (let page = 1; page <= maxPages; page++) {
-      const response = await this.client.get(
-        `/repos/${owner}/${repo}/pulls/${pullNumber}/files`,
-        {
-          params: {
-            per_page: perPage,
-            page,
+    try {
+      for (let page = 1; page <= maxPages; page++) {
+        const response = await this.client.get(
+          `/repos/${owner}/${repo}/pulls/${pullNumber}/files`,
+          {
+            params: {
+              per_page: perPage,
+              page,
+            },
           },
-        },
-      );
+        );
 
-      const items: GitHubPullRequestFile[] = response.data;
-      if (!Array.isArray(items) || items.length === 0) break;
-      all.push(...items);
-      if (items.length < perPage) break;
+        const items: GitHubPullRequestFile[] = response.data;
+        if (!Array.isArray(items) || items.length === 0) break;
+        all.push(...items);
+        if (items.length < perPage) break;
+      }
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return all; // Return what we have (likely empty) if 404 occurs
+      }
+      throw sanitizeGitHubError(error);
     }
 
     return all;
@@ -397,8 +495,15 @@ export class GitHubService {
     owner: string,
     repo: string,
   ): Promise<Record<string, number>> {
-    const response = await this.client.get(`/repos/${owner}/${repo}/languages`);
-    return response.data;
+    try {
+      const response = await this.client.get(`/repos/${owner}/${repo}/languages`);
+      return response.data;
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return {};
+      }
+      throw sanitizeGitHubError(error);
+    }
   }
 
   /**
@@ -414,10 +519,17 @@ export class GitHubService {
       avatar_url: string;
     }>
   > {
-    const response = await this.client.get(
-      `/repos/${owner}/${repo}/contributors`,
-    );
-    return response.data;
+    try {
+      const response = await this.client.get(
+        `/repos/${owner}/${repo}/contributors`,
+      );
+      return response.data;
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return [];
+      }
+      throw sanitizeGitHubError(error);
+    }
   }
 
   /**
