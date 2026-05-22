@@ -32,15 +32,32 @@ export async function middleware(request: NextRequest) {
       secret: process.env.NEXTAUTH_SECRET,
     });
 
+    let userId: string | undefined = token?.sub;
+
     // Step 2: If no token, user is not logged in → redirect to login
     if (!token) {
       if (request.nextUrl.pathname.startsWith("/api")) {
-        return unauthorizedResponse();
+        const authHeader = request.headers.get("authorization");
+        const match = authHeader?.match(/^Bearer\s+(.+)$/i);
+        
+        if (match && match[1]) {
+          try {
+            const payload = verifyToken(match[1]);
+            if (payload) {
+              userId = payload.userId.toString();
+            } else {
+              return unauthorizedResponse();
+            }
+          } catch {
+            return unauthorizedResponse();
+          }
+        } else {
+          return unauthorizedResponse();
+        }
+      } else {
+        return NextResponse.redirect(new URL("/login", request.url));
       }
-      return NextResponse.redirect(new URL("/login", request.url));
     }
-
-    const userId = token.sub; // This is the logged-in user's ID
 
     // Step 3: Get the resource owner ID from the request headers (if provided)
     const resourceOwnerId = request.headers.get("x-resource-owner-id");
@@ -74,10 +91,16 @@ export async function getAuthUser(
 ): Promise<JWTPayload | null> {
   const authHeader = request.headers.get("authorization");
 
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    const token = authHeader.substring(7);
-    const payload = verifyToken(token);
-    if (payload) return payload;
+  if (authHeader) {
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (match && match[1]) {
+      try {
+        const payload = verifyToken(match[1]);
+        if (payload) return payload;
+      } catch {
+        // Fall back to other auth methods if token is invalid
+      }
+    }
   }
 
   try {

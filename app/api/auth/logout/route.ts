@@ -36,6 +36,14 @@ export async function POST(request: NextRequest) {
 
       const rawBody = await request.text();
 
+      const actualByteLength = new TextEncoder().encode(rawBody).length;
+      if (actualByteLength > MAX_BODY_SIZE) {
+        return NextResponse.json(
+          { error: "Request body too large" },
+          { status: 413 }
+        );
+      }
+
       // Only validate JSON when body actually exists
       if (rawBody.trim().length > 0) {
         try {

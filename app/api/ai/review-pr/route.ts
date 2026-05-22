@@ -59,8 +59,4 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  return NextResponse.json(
-    { error: "An unexpected error occurred", details: "Unexpected fallthrough" },
-    { status: 500 },
-  );
 }

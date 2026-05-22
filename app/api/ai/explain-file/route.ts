@@ -38,12 +38,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const existingRepo = await prisma.repository.findUnique({ where: { id: repositoryId } });
+    const existingRepo = await prisma.repository.findFirst({ where: { id: repositoryId, userId: user.userId } });
     if (!existingRepo) {
       return notFoundResponse("Repository not found");
-    }
-    if (existingRepo.userId !== user.userId) {
-      return forbiddenResponse();
     }
 
     const repository = (await repositoryService.getRepository(

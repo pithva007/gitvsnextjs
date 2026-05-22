@@ -22,6 +22,7 @@ const MAX_RETRIES = 4;
 const BASE_DELAY_MS = 500;
 /** Hard ceiling so a misbehaving retry-after header can't blow the timeout. */
 const MAX_SINGLE_DELAY_MS = 7_500;
+const MAX_TOTAL_RETRY_DELAY_MS = 7_500;
 
 export interface GitHubFetchOptions extends RequestInit {
   /** GitHub personal access token or installation token. */
@@ -91,17 +92,20 @@ export async function githubFetch(
 ): Promise<Response> {
   const { token, ...fetchOptions } = options;
 
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    ...(fetchOptions.headers as Record<string, string> | undefined),
-  };
+  const headers = new Headers(fetchOptions.headers);
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/vnd.github+json");
+  }
+  if (!headers.has("X-GitHub-Api-Version")) {
+    headers.set("X-GitHub-Api-Version", "2022-11-28");
+  }
 
   if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+    headers.set("Authorization", `Bearer ${token}`);
   }
 
   let lastNetworkError: Error | null = null;
+  let totalDelayMs = 0;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -127,27 +131,50 @@ export async function githubFetch(
         const serverWait = getRetryAfterMs(res);
         const delay = serverWait > 0 ? serverWait : backoffMs(attempt);
 
+        if (totalDelayMs + delay > MAX_TOTAL_RETRY_DELAY_MS) {
+          console.warn(`[githubFetch] Max total retry delay exceeded for ${url}`);
+          return new Response(
+            JSON.stringify({
+              error: "GitHub API rate limit exceeded. Please try again later.",
+            }),
+            {
+              status: 429,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
+
         console.warn(
           `[githubFetch] Rate limited on attempt ${attempt + 1}/${MAX_RETRIES + 1}. ` +
             `Retrying in ${Math.round(delay)}ms… (${url})`,
         );
+        totalDelayMs += delay;
         await sleep(delay);
         continue;
       }
 
       // Non-rate-limit response (success or other HTTP error) — return as-is.
       return res;
-    } catch (err) {
+    } catch (err: any) {
+      if (err.name === "AbortError") {
+        throw err;
+      }
+
       lastNetworkError =
         err instanceof Error ? err : new Error(String(err));
 
       if (attempt === MAX_RETRIES) break;
 
       const delay = backoffMs(attempt);
+      if (totalDelayMs + delay > MAX_TOTAL_RETRY_DELAY_MS) {
+        break;
+      }
+
       console.warn(
         `[githubFetch] Network error on attempt ${attempt + 1}/${MAX_RETRIES + 1}: ` +
           `${lastNetworkError.message}. Retrying in ${Math.round(delay)}ms… (${url})`,
       );
+      totalDelayMs += delay;
       await sleep(delay);
     }
   }

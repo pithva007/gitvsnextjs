@@ -171,18 +171,23 @@ export class GitHubService {
         const config = error.config as any;
 
         config.retryCount = config.retryCount || 0;
+        config.totalDelayMs = config.totalDelayMs || 0;
 
         /** Maximum number of retries for any category. */
         const MAX_RETRIES = 4;
         /** Hard ceiling on any single delay to keep within Vercel's 10 s limit. */
         const MAX_DELAY_MS = 7_500;
+        const MAX_TOTAL_RETRY_DELAY_MS = 7_500;
 
         const isRateLimit = status === 429 || status === 403;
         if (isRateLimit) {
           const rateLimitRemaining = error.response?.headers?.["x-ratelimit-remaining"];
-          if (status === 429 || rateLimitRemaining === "0") {
+          const retryAfterHeader = error.response?.headers?.["retry-after"];
+          const message = String((error.response?.data as any)?.message || "");
+          const isSecondaryRateLimit = message.toLowerCase().includes("secondary rate limit");
+
+          if (status === 429 || rateLimitRemaining === "0" || !!retryAfterHeader || isSecondaryRateLimit) {
             if (config.retryCount >= MAX_RETRIES) {
-              const retryAfterHeader = error.response?.headers?.["retry-after"];
               const resetHeader = error.response?.headers?.["x-ratelimit-reset"];
               let retrySeconds = 60;
 
@@ -197,13 +202,23 @@ export class GitHubService {
             config.retryCount += 1;
 
             // Prefer server-supplied delay, fall back to jittered exponential backoff.
-            const rawDelay = getRetryDelayMs(error, config.retryCount) ?? 1000;
+            let rawDelay = 1000;
+            if (retryAfterHeader) {
+              rawDelay = parseInt(retryAfterHeader, 10) * 1000;
+            } else {
+              rawDelay = getRetryDelayMs(error, config.retryCount) ?? 1000;
+            }
             const jitter = Math.random() * 200;
             const delayMs = Math.min(rawDelay + jitter, MAX_DELAY_MS);
+
+            if (config.totalDelayMs + delayMs > MAX_TOTAL_RETRY_DELAY_MS) {
+              throw new GitHubRateLimitError(Math.ceil(delayMs / 1000));
+            }
 
             console.warn(
               `[GitHubService] Rate limited — retry ${config.retryCount}/${MAX_RETRIES} in ${Math.round(delayMs)}ms`,
             );
+            config.totalDelayMs += delayMs;
             await new Promise((resolve) => setTimeout(resolve, delayMs));
             return this.client(config);
           }
@@ -223,13 +238,15 @@ export class GitHubService {
               Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000,
               MAX_DELAY_MS,
             );
-            console.warn(
-              `[GitHubService] Network error (${status ?? error.code}) — retry ${config.retryCount}/${MAX_RETRIES} in ${Math.round(backoff)}ms`,
-            );
-            const backoff = Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000;
-            console.log(`Retrying GitHub API request ${config.url} (attempt ${config.retryCount}) due to ${status || error.code}...`);
-            await new Promise((resolve) => setTimeout(resolve, backoff));
-            return this.client(config);
+            if (config.totalDelayMs + backoff <= MAX_TOTAL_RETRY_DELAY_MS) {
+              console.warn(
+                `[GitHubService] Network error (${status ?? error.code}) — retry ${config.retryCount}/${MAX_RETRIES} in ${Math.round(backoff)}ms`,
+              );
+              console.log(`Retrying GitHub API request ${config.url} (attempt ${config.retryCount}) due to ${status || error.code}...`);
+              config.totalDelayMs += backoff;
+              await new Promise((resolve) => setTimeout(resolve, backoff));
+              return this.client(config);
+            }
           }
         }
 

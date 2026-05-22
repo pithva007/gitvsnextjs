@@ -22,17 +22,30 @@ export async function GET(
       );
     }
 
-    // Check job existence and ownership (Pattern C)
-    const job = await prisma.analysisJob.findUnique({
-      where: { id: jobId },
+    // Check job existence and ownership
+    const job = await prisma.analysisJob.findFirst({
+      where: { id: jobId, userId: user.userId },
+      select: {
+        id: true,
+        status: true,
+        type: true,
+        repositoryId: true,
+        attempts: true,
+        maxAttempts: true,
+        nextRunAt: true,
+        progressPercent: true,
+        progressMessage: true,
+        progressDetails: true,
+        startedAt: true,
+        finishedAt: true,
+        error: true,
+        updatedAt: true,
+        createdAt: true,
+      }
     });
 
     if (!job) {
       return notFoundResponse("Job not found");
-    }
-
-    if (job.userId !== user.userId) {
-      return forbiddenResponse("You do not have access to this job");
     }
 
     return NextResponse.json({ job });

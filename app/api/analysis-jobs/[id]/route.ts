@@ -19,16 +19,12 @@ export async function GET(
     }
 
     // Check job existence and ownership (Pattern C)
-    const job = await prisma.analysisJob.findUnique({
-      where: { id: jobId },
+    const job = await prisma.analysisJob.findFirst({
+      where: { id: jobId, userId: user.userId },
     });
 
     if (!job) {
       return notFoundResponse("Job not found");
-    }
-
-    if (job.userId !== user.userId) {
-      return forbiddenResponse("You do not have access to this job");
     }
 
     const details = job.progressDetails as { retryAfter?: number; rateLimited?: boolean } | null;

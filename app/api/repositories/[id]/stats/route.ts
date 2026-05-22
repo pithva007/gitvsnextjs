@@ -10,14 +10,14 @@ export async function GET(
 ) {
   try {
     const user = await requireAuth(request);
-    const id = Number(params.id);
-
-    if (!Number.isInteger(id) || id <= 0) {
+    if (!/^\d+$/.test(params.id)) {
       return NextResponse.json(
         { error: "Invalid repository ID. Must be a positive integer." },
         { status: 400 }
       );
     }
+    
+    const id = Number(params.id);
 
     const existingRepo = await prisma.repository.findUnique({ where: { id } });
     if (!existingRepo) {
