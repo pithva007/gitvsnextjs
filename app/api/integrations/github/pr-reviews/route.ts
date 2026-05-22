@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import prisma from "@/lib/prisma";
 import { toJsonSafe } from "@/lib/utils/jsonSafe";
+
+export const dynamic = "force-dynamic";
 
 function clampInt(
   value: string | null,
@@ -67,6 +69,9 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error("GitHub PR reviews error:", error);
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status },
@@ -74,7 +79,7 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json(
       {
-        error: "Failed to load PR reviews",
+        error: "An unexpected error occurred",
       },
       { status: 500 },
     );

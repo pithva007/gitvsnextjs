@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import { getGeminiService } from "@/lib/services/geminiService";
 
 export async function POST(request: NextRequest) {
@@ -32,13 +32,16 @@ export async function POST(request: NextRequest) {
     console.error("Commit suggestion error:", error);
 
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
       );
     }
     return NextResponse.json(
-      { error: "Failed to generate suggestions" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

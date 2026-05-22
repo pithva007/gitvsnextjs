@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthUser } from "@/lib/middleware";
+import { getAuthUser, unauthorizedResponse, forbiddenResponse, notFoundResponse, isHttpError } from "@/lib/middleware";
 import prisma from "@/lib/prisma";
 import { toJsonSafe } from "@/lib/utils/jsonSafe";
 
@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
     const user = await getAuthUser(request);
 
     if (!user) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+      return unauthorizedResponse("Not authenticated");
     }
 
     const { searchParams } = new URL(request.url);
@@ -47,8 +47,17 @@ export async function GET(request: NextRequest) {
     });
   } catch (error: any) {
     console.error("Fetch sessions error:", error);
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
-      { error: "Internal server error" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

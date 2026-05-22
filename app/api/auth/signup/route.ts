@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import prisma from "@/lib/prisma";
 import { generateToken } from "@/lib/auth";
+import { unauthorizedResponse, forbiddenResponse, notFoundResponse, isHttpError } from "@/lib/middleware";
 
 export async function POST(request: NextRequest) {
   try {
@@ -75,10 +76,19 @@ export async function POST(request: NextRequest) {
       },
       { status: 201 }
     );
-  } catch (error) {
+  } catch (error: any) {
     console.error("Signup error:", error);
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
-      { error: "Internal server error" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

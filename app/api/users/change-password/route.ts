@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import prisma from "@/lib/prisma";
-import { requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 
 export async function POST(request: NextRequest) {
   try {
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!userDetails) {
-      return NextResponse.json({ message: "User not found" }, { status: 404 });
+      return notFoundResponse("User not found");
     }
 
     const passwordHash =
@@ -47,10 +47,7 @@ export async function POST(request: NextRequest) {
       );
 
       if (!isPasswordValid) {
-        return NextResponse.json(
-          { message: "Current password is incorrect" },
-          { status: 401 }
-        );
+        return unauthorizedResponse("Current password is incorrect");
       }
     }
 
@@ -64,8 +61,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: "Password changed successfully" });
   } catch (error: any) {
     console.error("Error changing password:", error);
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { message: error.message },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
-      { message: "Failed to change password" },
+      { message: "An unexpected error occurred" },
       { status: 500 }
     );
   }

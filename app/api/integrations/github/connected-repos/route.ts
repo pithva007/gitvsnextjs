@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import prisma from "@/lib/prisma";
 import { sanitizeErrorMessage } from "@/lib/utils/rateLimit";
 import { toJsonSafe } from "@/lib/utils/jsonSafe";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
@@ -37,6 +39,9 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error("GitHub connected repos error:", sanitizeErrorMessage(error));
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status },
@@ -44,7 +49,7 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json(
       {
-        error: "Failed to load connected repos",
+        error: "An unexpected error occurred",
       },
       { status: 500 },
     );

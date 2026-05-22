@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import {
   parsePullRequestUrl,
   reviewPullRequest,
@@ -44,16 +44,23 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: any) {
     console.error("PR review error:", error);
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
-      {
-        error: "Failed to review PR",
-      },
+      { error: "An unexpected error occurred" },
       { status: 500 },
     );
   }
 
   return NextResponse.json(
-    { error: "Failed to review PR", details: "Unexpected fallthrough" },
+    { error: "An unexpected error occurred", details: "Unexpected fallthrough" },
     { status: 500 },
   );
 }

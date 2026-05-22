@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import { sanitizeErrorMessage } from "@/lib/utils/rateLimit";
 import bcrypt from "bcryptjs";
 
@@ -98,8 +98,17 @@ export async function PUT(request: NextRequest) {
     });
   } catch (error: any) {
     console.error("Error updating profile:", sanitizeErrorMessage(error));
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { message: error.message },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
-      { message: "Failed to update profile" },
+      { message: "An unexpected error occurred" },
       { status: 500 }
     );
   }

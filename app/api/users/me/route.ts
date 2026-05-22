@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import { sanitizeErrorMessage } from "@/lib/utils/rateLimit";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
       })) > 0;
 
     if (!userDetails) {
-      return NextResponse.json({ message: "User not found" }, { status: 404 });
+      return notFoundResponse("User not found");
     }
 
     return NextResponse.json({
@@ -41,8 +41,17 @@ export async function GET(request: NextRequest) {
     });
   } catch (error: any) {
     console.error("Error fetching user:", sanitizeErrorMessage(error));
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { message: error.message },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
-      { message: "Failed to fetch user" },
+      { message: "An unexpected error occurred" },
       { status: 500 }
     );
   }
@@ -60,10 +69,19 @@ export async function DELETE(request: NextRequest) {
   } catch (error: any) {
     console.error("Error deleting account:", sanitizeErrorMessage(error));
     if (error?.code === "P2025") {
-      return NextResponse.json({ message: "User not found" }, { status: 404 });
+      return notFoundResponse("User not found");
+    }
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { message: error.message },
+        { status: error.status }
+      );
     }
     return NextResponse.json(
-      { message: "Failed to delete account" },
+      { message: "An unexpected error occurred" },
       { status: 500 }
     );
   }

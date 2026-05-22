@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
+import prisma from "@/lib/prisma";
 import { getGeminiService } from "@/lib/services/geminiService";
 import { repositoryService } from "@/lib/services/repositoryService";
 
@@ -22,16 +23,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const existingRepo = await prisma.repository.findUnique({ where: { id: repositoryId } });
+    if (!existingRepo) {
+      return notFoundResponse("Repository not found");
+    }
+    if (existingRepo.userId !== user.userId) {
+      return forbiddenResponse();
+    }
+
     const repository = await repositoryService.getRepository(
       repositoryId,
       user.userId
     );
 
     if (!repository) {
-      return NextResponse.json(
-        { error: "Repository not found" },
-        { status: 404 }
-      );
+      return notFoundResponse("Repository not found");
     }
 
     const context = {
@@ -59,6 +65,9 @@ export async function POST(request: NextRequest) {
     console.error("AI chat error:", error);
 
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
@@ -66,7 +75,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: "Failed to process chat" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { getAuthUser } from "@/lib/middleware";
+import { getAuthUser, unauthorizedResponse, forbiddenResponse, notFoundResponse, isHttpError } from "@/lib/middleware";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
     const user = await getAuthUser(request);
 
     if (!user) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+      return unauthorizedResponse("Not authenticated");
     }
 
     // Fetch user details
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!userDetails) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
+      return notFoundResponse("User not found");
     }
 
     return NextResponse.json({
@@ -30,10 +30,19 @@ export async function GET(request: NextRequest) {
         avatarUrl: (userDetails as any).image,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Get user error:", error);
+    if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
     return NextResponse.json(
-      { error: "Internal server error" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

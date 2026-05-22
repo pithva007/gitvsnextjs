@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import prisma from "@/lib/prisma";
 import { GitHubService, GitHubRateLimitError } from "@/lib/services/githubService";
 import { sanitizeErrorMessage } from "@/lib/utils/rateLimit";
@@ -56,6 +56,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status },
@@ -63,7 +66,7 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json(
       {
-        error: "Failed to connect GitHub",
+        error: "An unexpected error occurred",
       },
       { status: 500 },
     );

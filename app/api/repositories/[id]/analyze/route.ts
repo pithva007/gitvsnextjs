@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
-import { repositoryService } from "@/lib/services/repositoryService";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
+import prisma from "@/lib/prisma";
 import { analysisJobService } from "@/lib/services/analysisJobService";
 
 export async function POST(
@@ -19,13 +19,12 @@ export async function POST(
     }
 
     // Verify ownership
-    const repository = await repositoryService.getRepository(id, user.userId);
-
-    if (!repository) {
-      return NextResponse.json(
-        { error: "Repository not found" },
-        { status: 404 }
-      );
+    const existingRepo = await prisma.repository.findUnique({ where: { id } });
+    if (!existingRepo) {
+      return notFoundResponse("Repository not found");
+    }
+    if (existingRepo.userId !== user.userId) {
+      return forbiddenResponse();
     }
 
     const job = await analysisJobService.createRepositoryAnalysisJob({
@@ -40,13 +39,16 @@ export async function POST(
   } catch (error: any) {
     console.error("Analyze repository error:", error);
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
       );
     }
     return NextResponse.json(
-      { error: "Failed to start analysis" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

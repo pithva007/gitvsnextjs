@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-
-import { requireAuth, isHttpError } from "@/lib/middleware";
-import { analysisJobService } from "@/lib/services/analysisJobService";
+import { requireAuth, isHttpError, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
+import prisma from "@/lib/prisma";
 
 export async function GET(
   request: NextRequest,
@@ -19,13 +18,17 @@ export async function GET(
       );
     }
 
-    const job = await analysisJobService.getJob({
-      jobId,
-      userId: user.userId,
+    // Check job existence and ownership (Pattern C)
+    const job = await prisma.analysisJob.findUnique({
+      where: { id: jobId },
     });
 
     if (!job) {
-      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+      return notFoundResponse("Job not found");
+    }
+
+    if (job.userId !== user.userId) {
+      return forbiddenResponse("You do not have access to this job");
     }
 
     const details = job.progressDetails as { retryAfter?: number; rateLimited?: boolean } | null;
@@ -56,6 +59,9 @@ export async function GET(
     console.error("Get analysis job error:", error);
 
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
@@ -63,7 +69,7 @@ export async function GET(
     }
 
     return NextResponse.json(
-      { error: "Failed to get analysis job" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

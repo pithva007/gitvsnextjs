@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import prisma from "@/lib/prisma";
 import { repositoryService } from "@/lib/services/repositoryService";
 
@@ -18,13 +18,18 @@ export async function GET(
       );
     }
 
+    const existingRepo = await prisma.repository.findUnique({ where: { id } });
+    if (!existingRepo) {
+      return notFoundResponse("Repository not found");
+    }
+    if (existingRepo.userId !== user.userId) {
+      return forbiddenResponse();
+    }
+
     const repository = await repositoryService.getRepository(id, user.userId);
 
     if (!repository) {
-      return NextResponse.json(
-        { error: "Repository not found" },
-        { status: 404 }
-      );
+      return notFoundResponse("Repository not found");
     }
 
     const latestJob = await prisma.analysisJob.findFirst({
@@ -52,6 +57,9 @@ export async function GET(
     console.error("Get repository error:", error);
 
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
@@ -59,7 +67,7 @@ export async function GET(
     }
 
     return NextResponse.json(
-      { error: "Failed to get repository" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }
@@ -80,6 +88,14 @@ export async function DELETE(
       );
     }
 
+    const existingRepo = await prisma.repository.findUnique({ where: { id } });
+    if (!existingRepo) {
+      return notFoundResponse("Repository not found");
+    }
+    if (existingRepo.userId !== user.userId) {
+      return forbiddenResponse();
+    }
+
     await repositoryService.deleteRepository(id, user.userId);
 
     return NextResponse.json({ message: "Repository deleted successfully" });
@@ -87,18 +103,17 @@ export async function DELETE(
     console.error("Delete repository error:", error);
 
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
       );
     }
 
-    if (error.message === "Repository not found") {
-      return NextResponse.json({ error: error.message }, { status: 404 });
-    }
-
     return NextResponse.json(
-      { error: "Failed to delete repository" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

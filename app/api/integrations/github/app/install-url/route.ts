@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import { sanitizeErrorMessage } from "@/lib/utils/rateLimit";
 import { createSignedState } from "@/lib/utils/signedState";
 
@@ -28,6 +28,9 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error("GitHub App install-url error:", sanitizeErrorMessage(error));
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status },
@@ -35,7 +38,7 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json(
       {
-        error: "Failed to create install URL",
+        error: "An unexpected error occurred",
       },
       { status: 500 },
     );

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
 import { repositoryService } from "@/lib/services/repositoryService";
 import { analysisJobService } from "@/lib/services/analysisJobService";
 
@@ -53,13 +53,16 @@ export async function POST(request: NextRequest) {
     console.error("Create repository error:", error);
     console.error("Error stack:", error.stack);
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
       );
     }
     return NextResponse.json(
-      { error: "Failed to create repository" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }
@@ -74,13 +77,16 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error("List repositories error:", error);
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
       );
     }
     return NextResponse.json(
-      { error: "Failed to list repositories" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }

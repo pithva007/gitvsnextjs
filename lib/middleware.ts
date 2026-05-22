@@ -1,6 +1,28 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { verifyToken, JWTPayload } from "./auth";
+
+export function unauthorizedResponse(message = "Authentication required") {
+  return new Response(JSON.stringify({ error: message }), {
+    status: 401,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function forbiddenResponse(message = "You do not have access to this resource") {
+  return new Response(JSON.stringify({ error: message }), {
+    status: 403,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function notFoundResponse(message = "Resource not found") {
+  return new Response(JSON.stringify({ error: message }), {
+    status: 404,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 export async function middleware(request: NextRequest) {
   try {
@@ -12,6 +34,9 @@ export async function middleware(request: NextRequest) {
 
     // Step 2: If no token, user is not logged in → redirect to login
     if (!token) {
+      if (request.nextUrl.pathname.startsWith("/api")) {
+        return unauthorizedResponse();
+      }
       return NextResponse.redirect(new URL("/login", request.url));
     }
 
@@ -23,10 +48,7 @@ export async function middleware(request: NextRequest) {
     // Step 4: If a resource owner is specified, check it matches the logged-in user
     if (resourceOwnerId && resourceOwnerId !== userId) {
       // Someone is trying to access another user's data → block them!
-      return NextResponse.json(
-        { error: "Forbidden: You do not have access to this resource." },
-        { status: 403 }
-      );
+      return forbiddenResponse();
     }
 
     // Step 5: Everything checks out → allow the request to continue
@@ -46,3 +68,58 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: ["/api/:path*", "/dashboard/:path*", "/profile/:path*"],
 };
+
+export async function getAuthUser(
+  request: NextRequest
+): Promise<JWTPayload | null> {
+  const authHeader = request.headers.get("authorization");
+
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.substring(7);
+    const payload = verifyToken(token);
+    if (payload) return payload;
+  }
+
+  try {
+    const token = await getToken({
+      req: request,
+      secret: process.env.NEXTAUTH_SECRET,
+    });
+    if (!token?.sub || !token.email) return null;
+
+    const userId = Number(token.sub);
+    if (!Number.isFinite(userId)) return null;
+
+    return { userId, email: token.email };
+  } catch {
+    return null;
+  }
+}
+
+export async function requireAuth(request: NextRequest): Promise<JWTPayload> {
+  const user = await getAuthUser(request);
+
+  if (!user) {
+    throw new HttpError(401, "Unauthorized");
+  }
+
+  return user;
+}
+
+export class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export function isHttpError(error: unknown): error is HttpError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as any).status === "number"
+  );
+}

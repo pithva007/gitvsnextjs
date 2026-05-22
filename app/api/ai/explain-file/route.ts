@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, unauthorizedResponse, forbiddenResponse, notFoundResponse } from "@/lib/middleware";
+import prisma from "@/lib/prisma";
 import { repositoryService } from "@/lib/services/repositoryService";
 
 type RepositoryFile = {
@@ -37,25 +38,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const existingRepo = await prisma.repository.findUnique({ where: { id: repositoryId } });
+    if (!existingRepo) {
+      return notFoundResponse("Repository not found");
+    }
+    if (existingRepo.userId !== user.userId) {
+      return forbiddenResponse();
+    }
+
     const repository = (await repositoryService.getRepository(
       repositoryId,
       user.userId
     )) as Repository;
 
     if (!repository) {
-      return NextResponse.json(
-        { error: "Repository not found" },
-        { status: 404 }
-      );
+      return notFoundResponse("Repository not found");
     }
 
     const file = repository.files.find((f) => f.path === filePath);
 
     if (!file) {
-      return NextResponse.json(
-        { error: "File not found in repository" },
-        { status: 404 }
-      );
+      return notFoundResponse("File not found in repository");
     }
 
     const explanation = `File: ${file.path}\nSize: ${file.size} bytes\nLanguage: ${file.language || "Unknown"}\n\nThis is a ${file.extension || "file"} in the repository.`;
@@ -68,13 +71,16 @@ export async function POST(request: NextRequest) {
     console.error("File explanation error:", error);
 
     if (isHttpError(error)) {
+      if (error.status === 401) return unauthorizedResponse(error.message);
+      if (error.status === 403) return forbiddenResponse(error.message);
+      if (error.status === 404) return notFoundResponse(error.message);
       return NextResponse.json(
         { error: error.message },
         { status: error.status }
       );
     }
     return NextResponse.json(
-      { error: "Failed to explain file" },
+      { error: "An unexpected error occurred" },
       { status: 500 }
     );
   }
