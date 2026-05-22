@@ -55,7 +55,9 @@ export default function LandingPage() {
 
     const isTyping =
       active instanceof HTMLInputElement ||
-      active instanceof HTMLTextAreaElement;
+      active instanceof HTMLTextAreaElement ||
+      active instanceof HTMLSelectElement ||
+      (active instanceof HTMLElement && active.isContentEditable);
 
     if (e.key === "/" && !isTyping) {
       e.preventDefault();
