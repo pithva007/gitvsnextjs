@@ -106,13 +106,13 @@ export const Footer: React.FC = () => {
 
         {/* Bottom Section */}
         <div className="mt-12 pt-8 border-t border-border/50 flex flex-col md:flex-row justify-between items-center">
-          <p className="text-sm">© 2026 GitVerse. All rights reserved.</p>
+          <p className="text-sm">&copy; 2026 GitVerse. All rights reserved.</p>
           <div className="flex space-x-6 mt-4 md:mt-0">
-            
+            <a
               href="https://x.com/nisshchayarathi"
               target="_blank"
               rel="noopener noreferrer"
-              aria-label="X (formerly Twitter)"
+              aria-label="X formerly Twitter"
               className="hover:text-primary transition-colors"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
