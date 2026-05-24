@@ -68,7 +68,8 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (error: any) {
-    logger.error({ err: sanitizeError(error), stack: error.stack }, "Create repository error");
+    const stack = process.env.NODE_ENV === 'development' ? error.stack : error.stack?.split('\n').slice(0, 3).join('\n');
+    logger.error({ err: sanitizeError(error), stack }, "Create repository error");
     if (isHttpError(error)) {
       return NextResponse.json(
         { error: error.message },
