@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Loader2, X, Minimize2, Maximize2, Sparkles } from "lucide-react";
 import { Card } from "@/components/ui";
+import { sanitizeHtml } from "@/lib/sanitize";
 import { geminiService, ChatMessage } from "@/services/gemini";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
@@ -245,7 +246,7 @@ User Question: ${input}`;
       return (
         <div
           key={i}
-          dangerouslySetInnerHTML={{ __html: line }}
+          dangerouslySetInnerHTML={{ __html: sanitizeHtml(line) }}
           className="leading-relaxed"
         />
       );
