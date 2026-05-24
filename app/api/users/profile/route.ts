@@ -20,13 +20,16 @@ function isValidAvatarUrl(avatar: string): boolean {
   try {
     const parsedUrl = new URL(avatar);
 
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      return false;
-    }
+  if (!["http:", "https:", "blob:"].includes(parsedUrl.protocol)) {
+  return false;
+}
 
-    if (!parsedUrl.hostname || !parsedUrl.hostname.includes(".")) {
-      return false;
-    }
+    if (
+  parsedUrl.protocol !== "blob:" &&
+  (!parsedUrl.hostname || !parsedUrl.hostname.includes("."))
+) {
+  return false;
+}
 
     const pathname = parsedUrl.pathname.toLowerCase();
 
