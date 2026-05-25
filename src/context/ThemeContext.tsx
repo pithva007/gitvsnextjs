@@ -16,11 +16,17 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [theme, setThemeState] = useState<Theme>('light')
 
   useEffect(() => {
-    const saved = localStorage.getItem('theme') as Theme | null
     let activeTheme: Theme = 'light'
-    if (saved) {
-      activeTheme = saved
-    } else {
+    try {
+      const saved = localStorage.getItem('theme') as Theme | null
+      if (saved === 'light' || saved === 'dark') {
+        activeTheme = saved
+      } else {
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        activeTheme = prefersDark ? 'dark' : 'light'
+      }
+    } catch (e) {
+      console.warn('Failed to access localStorage for theme:', e)
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
       activeTheme = prefersDark ? 'dark' : 'light'
     }
@@ -36,7 +42,11 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const setTheme = (newTheme: Theme) => {
     setThemeState(newTheme)
-    localStorage.setItem('theme', newTheme)
+    try {
+      localStorage.setItem('theme', newTheme)
+    } catch (e) {
+      console.error('Failed to save theme to localStorage:', e)
+    }
     const root = document.documentElement
     if (newTheme === 'dark') {
       root.classList.add('dark')
