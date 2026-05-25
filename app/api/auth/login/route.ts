@@ -59,9 +59,6 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { email, password } = body;
 
-    // Normalize email to lowercase
-    const normalizedEmail = email.toLowerCase();
-
     // Validation
     if (!email || !password) {
       return NextResponse.json(
@@ -69,6 +66,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Normalize email after validation
+    const normalizedEmail = email.toLowerCase();
 
     // Find user
     const user = await prisma.user.findUnique({
@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Security: prevent password login for Google-only accounts
+    // Prevent password login for Google-only accounts
     if (!user.passwordHash) {
       const hasGoogleAccount =
         (await prisma.account.count({
@@ -104,7 +104,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Verify password
     const passwordHash = user.passwordHash;
 
     if (!passwordHash) {
@@ -130,7 +129,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate JWT token
     const token = generateToken({
       userId: user.id,
       email: user.email,
@@ -146,8 +144,12 @@ export async function POST(request: NextRequest) {
       token,
     });
 
-  } catch (error: any) {
-    logger.error({ err: sanitizeError(error) }, "Login error");
+  } catch (error) {
+    logger.error(
+      { err: sanitizeError(error) },
+      "Login error"
+    );
+
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
