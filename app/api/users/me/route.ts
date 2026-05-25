@@ -71,18 +71,34 @@ export async function DELETE(request: NextRequest) {
   try {
     const user = await requireAuth(request);
 
-    await prisma.user.delete({
-      where: { id: user.userId },
-    });
+    // Delete related GitHub repositories
+await prisma.gitHubRepo.deleteMany({
+  where: {
+    userId: user.userId,
+  },
+});
 
-    return NextResponse.json(
-      { message: "Account deleted" },
-      {
-        headers: {
-          "Cache-Control": "no-store, no-cache, must-revalidate, private",
-        },
-      },
-    );
+// Delete related GitHub accounts
+await prisma.gitHubAccount.deleteMany({
+  where: {
+    userId: user.userId,
+  },
+});
+
+// Delete the user
+await prisma.user.delete({
+  where: { id: user.userId },
+});
+
+return NextResponse.json(
+  { message: "Account deleted" },
+  {
+    headers: {
+      "Cache-Control": "no-store, no-cache, must-revalidate, private",
+    },
+  },
+);
+    
   } catch (error: any) {
     console.error("Error deleting account:", sanitizeError(error));
     if (error?.code === "P2025") {
