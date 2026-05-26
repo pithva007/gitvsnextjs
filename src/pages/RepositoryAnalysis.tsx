@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 export const dynamic = "force-dynamic";
 import { useState, useEffect, useRef, useMemo } from "react";
@@ -39,6 +39,10 @@ import {
 
 import { useToast } from "@/hooks/use-toast";
 import { buildApiUrl } from "@/services/apiConfig";
+import { Modal } from "@/components/ui/Modal";
+import { DEFAULT_EXCLUDED_DIRS, pruneFlatFiles } from "@/lib/utils/treePruner";
+import { ExclusionFilter } from "@/components/repository/ExclusionFilter";
+
 // Local fallback skeleton UI (avoids missing import)
 const RepositoryAnalysisSkeleton: React.FC = () => {
   return (
@@ -152,6 +156,17 @@ export default function RepositoryAnalysis() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollingJobRef = useRef<string | null>(null);
+  const [excludedDirs, setExcludedDirs] = useState<string[]>(DEFAULT_EXCLUDED_DIRS);
+
+  const prunedRepository = useMemo(() => {
+    if (!repository) return null;
+    const flatFiles = repository.files || [];
+    const prunedFiles = pruneFlatFiles(flatFiles, excludedDirs);
+    return {
+      ...repository,
+      files: prunedFiles,
+    };
+  }, [repository, excludedDirs]);
 
   // Timeout / stuck state
   const [analysisTimedOut, setAnalysisTimedOut] = useState(false);
@@ -546,21 +561,22 @@ export default function RepositoryAnalysis() {
 };
 
   const renderContent = () => {
+    const data = prunedRepository || repository;
     switch (activeTab) {
       case "overview":
-        return <RepositoryOverview repositoryData={repository} />;
+        return <RepositoryOverview repositoryData={data} />;
       case "files":
-        return <FileStructure repository={repository} />;
+        return <FileStructure repository={data} />;
       case "commits":
-        return <CommitHistory repository={repository} />;
+        return <CommitHistory repository={data} />;
       case "contributors":
-        return <Contributors repository={repository} />;
+        return <Contributors repository={data} />;
       case "mentor":
-        return <RepositoryMentorTab repositoryData={repository} />;
+        return <RepositoryMentorTab repositoryData={data} />;
       case "insights":
-        return <RepositoryInsights repository={repository} />;
+        return <RepositoryInsights repository={data} />;
       default:
-        return <RepositoryOverview repositoryData={repository} />;
+        return <RepositoryOverview repositoryData={data} />;
     }
   };
 
@@ -898,11 +914,22 @@ const safeProgressMessage =
                   </div>
                 </div>
 
+                {/* Exclusion Filter (Visible on Files and Insights tabs) */}
+                {(activeTab === "files" || activeTab === "insights") && (
+                  <div className="mb-6 animate-fade-in-up">
+                    <ExclusionFilter 
+                      excludedDirs={excludedDirs} 
+                      onChange={setExcludedDirs} 
+                    />
+                  </div>
+                )}
+
                 {/* Content */}
                 {/* Content */}
 <div className="animate-fade-in-up">
   {renderContent()}
 </div>
+
 
 {/* Analysis History */}
 <div className="glass rounded-lg p-6 mt-6">
