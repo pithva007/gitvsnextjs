@@ -298,110 +298,13 @@ if (existingRepositoryName) {
           : [];
       const existingHashes = new Set(existingCommits.map((c) => c.hash));
 
-      // Filter out commits that already exist
+      // Filter out commits that already exist — we track these for progress, not for writes.
+      // All commits are inserted atomically inside the write transaction below.
       const newCommits = commits.filter(
         (commit: { hash: string }) => !existingHashes.has(commit.hash),
       );
 
-
-      let insertedCount = 0;
-      let failedCount = 0;
-
-      const totalNewCommits = Math.max(1, newCommits.length);
-      const commitChunkSize = 100;
-
-      for (let i = 0; i < newCommits.length; i += commitChunkSize) {
-        checkAborted();
-        const chunk = newCommits.slice(i, i + commitChunkSize);
-
-        try {
-          const inserted = await prisma.commit.createMany({
-            data: chunk.map((commit) => ({
-              hash: commit.hash,
-              shortHash: commit.shortHash,
-              message: commit.message,
-              description: commit.description,
-              authorName: commit.authorName,
-              authorEmail: commit.authorEmail,
-              committedAt: commit.committedAt,
-              branch: commit.branch,
-              parents: commit.parents || [],
-              refs: commit.refs || [],
-              tags: commit.tags || [],
-              additions: commit.additions,
-              deletions: commit.deletions,
-              filesChanged: commit.filesChanged,
-              repositoryId,
-            })),
-            skipDuplicates: true,
-          });
-
-          insertedCount += inserted.count;
-
-          const insertedCommits =
-            chunk.length > 0
-              ? await prisma.commit.findMany({
-                  where: {
-                    repositoryId,
-                    hash: {
-                      in: chunk.map((commit: { hash: string }) => commit.hash),
-                    },
-                  },
-                  select: { id: true, hash: true },
-                })
-              : [];
-          const commitIdByHash = new Map(
-            insertedCommits.map((commit: { hash: string; id: number }) => [
-              commit.hash,
-              commit.id,
-            ]),
-          );
-
-          const fileChanges = chunk.flatMap(
-            (commit: {
-              hash: string;
-              fileChanges: Array<{
-                path: string;
-                additions: number;
-                deletions: number;
-                changeType: "added" | "modified" | "deleted";
-              }>;
-            }) => {
-            const commitId = commitIdByHash.get(commit.hash);
-            if (!commitId || commit.fileChanges.length === 0) return [];
-
-            return commit.fileChanges.map((change) => ({
-              path: change.path,
-              additions: change.additions,
-              deletions: change.deletions,
-              changeType: change.changeType.toUpperCase() as FileChangeType,
-              commitId,
-            }));
-            },
-          );
-
-          if (fileChanges.length > 0) {
-            await prisma.fileChange.createMany({
-              data: fileChanges,
-              skipDuplicates: true,
-            });
-          }
-
-          const pct = 25 + Math.round((Math.min(i + chunk.length, newCommits.length) / totalNewCommits) * 35);
-          await report({
-            progressPercent: Math.min(60, pct),
-            progressMessage: `Storing commits (${Math.min(i + chunk.length, newCommits.length)}/${newCommits.length})`,
-          });
-        } catch (error: any) {
-          failedCount += chunk.length;
-          console.error(`Failed to insert commit chunk starting at ${i}:`, error.message);
-        }
-
-        await yieldIfHighMemory();
-      }
-
-
-            checkAborted();
+      checkAborted();
 const latestCommitHashes = commits.map((commit: { hash: string }) => commit.hash);
       // Enforce commit retention window
      
@@ -494,77 +397,64 @@ await prisma.$transaction([
         if (commits.length > 0) {
           const commitChunkSize = 100;
           for (let i = 0; i < commits.length; i += commitChunkSize) {
-            checkAborted();
             const chunk = commits.slice(i, i + commitChunkSize);
 
-            try {
-              await tx.commit.createMany({
-                data: chunk.map((commit) => ({
-                  hash: commit.hash,
-                  shortHash: commit.shortHash,
-                  message: commit.message,
-                  description: commit.description,
-                  authorName: commit.authorName,
-                  authorEmail: commit.authorEmail,
-                  committedAt: commit.committedAt,
-                  branch: commit.branch,
-                  parents: commit.parents || [],
-                  refs: commit.refs || [],
-                  tags: commit.tags || [],
-                  additions: commit.additions,
-                  deletions: commit.deletions,
-                  filesChanged: commit.filesChanged,
-                  repositoryId,
-                })),
-              });
+            await tx.commit.createMany({
+              data: chunk.map((commit) => ({
+                hash: commit.hash,
+                shortHash: commit.shortHash,
+                message: commit.message,
+                description: commit.description,
+                authorName: commit.authorName,
+                authorEmail: commit.authorEmail,
+                committedAt: commit.committedAt,
+                branch: commit.branch,
+                parents: commit.parents || [],
+                refs: commit.refs || [],
+                tags: commit.tags || [],
+                additions: commit.additions,
+                deletions: commit.deletions,
+                filesChanged: commit.filesChanged,
+                repositoryId,
+              })),
+            });
 
-              const insertedCommits = await tx.commit.findMany({
-                where: {
-                  repositoryId,
-                  hash: { in: chunk.map((c: { hash: string }) => c.hash) },
-                },
-                select: { id: true, hash: true },
-              });
-              const commitIdByHash = new Map(
-                insertedCommits.map((c: { hash: string; id: number }) => [c.hash, c.id]),
-              );
+            const insertedCommits = await tx.commit.findMany({
+              where: {
+                repositoryId,
+                hash: { in: chunk.map((c: { hash: string }) => c.hash) },
+              },
+              select: { id: true, hash: true },
+            });
+            const commitIdByHash = new Map(
+              insertedCommits.map((c: { hash: string; id: number }) => [c.hash, c.id]),
+            );
 
-              const fileChanges = chunk.flatMap(
-                (commit: {
-                  hash: string;
-                  fileChanges: Array<{
-                    path: string;
-                    additions: number;
-                    deletions: number;
-                    changeType: "added" | "modified" | "deleted";
-                  }>;
-                }) => {
-                  const commitId = commitIdByHash.get(commit.hash);
-                  if (!commitId || commit.fileChanges.length === 0) return [];
-                  return commit.fileChanges.map((change) => ({
-                    path: change.path,
-                    additions: change.additions,
-                    deletions: change.deletions,
-                    changeType: change.changeType.toUpperCase() as FileChangeType,
-                    commitId,
-                  }));
-                },
-              );
+            const fileChanges = chunk.flatMap(
+              (commit: {
+                hash: string;
+                fileChanges: Array<{
+                  path: string;
+                  additions: number;
+                  deletions: number;
+                  changeType: "added" | "modified" | "deleted";
+                }>;
+              }) => {
+                const commitId = commitIdByHash.get(commit.hash);
+                if (!commitId || commit.fileChanges.length === 0) return [];
+                return commit.fileChanges.map((change) => ({
+                  path: change.path,
+                  additions: change.additions,
+                  deletions: change.deletions,
+                  changeType: change.changeType.toUpperCase() as FileChangeType,
+                  commitId,
+                }));
+              },
+            );
 
-              if (fileChanges.length > 0) {
-                await tx.fileChange.createMany({ data: fileChanges });
-              }
-
-              const pct = 25 + Math.round((Math.min(i + chunk.length, commits.length) / commits.length) * 35);
-              await report({
-                progressPercent: Math.min(60, pct),
-                progressMessage: `Processing commits (${Math.min(i + chunk.length, commits.length)}/${commits.length})...`,
-              });
-            } catch (error: any) {
-              console.error(`Failed to insert commit chunk starting at ${i}:`, error.message);
+            if (fileChanges.length > 0) {
+              await tx.fileChange.createMany({ data: fileChanges });
             }
-
-            await yieldIfHighMemory();
           }
         }
 
@@ -572,7 +462,6 @@ await prisma.$transaction([
         if (files.length > 0) {
           const chunkSize = 500;
           for (let i = 0; i < files.length; i += chunkSize) {
-            checkAborted();
             const chunk = files.slice(i, i + chunkSize);
             await tx.file.createMany({
               data: chunk.map((file) => ({
@@ -584,12 +473,6 @@ await prisma.$transaction([
                 language: file.language,
                 repositoryId,
               })),
-            });
-
-            const insertedSoFar = Math.min(files.length, i + chunk.length);
-            await report({
-              progressPercent: 65 + Math.round((insertedSoFar / files.length) * 10),
-              progressMessage: `Indexing files (${insertedSoFar}/${files.length})...`,
             });
           }
         }
