@@ -224,6 +224,14 @@ export async function reviewPullRequest(params: {
     })),
   );
 
+  const { crossRepoImpactService } = await import("./cross-repo-impact");
+  const modifiedFileNames = prFiles.map(f => f.filename);
+  const impactReport = crossRepoImpactService.analyzeImpact(`${params.owner}/${params.repo}`, modifiedFileNames);
+  
+  const impactContext = impactReport.potentiallyAffectedRepositories.length > 0 
+    ? `\nCross-Repository Impact Risk: ${impactReport.risk}\nReason: ${impactReport.reason}\nPotentially Affected Downstream Repositories: ${impactReport.potentiallyAffectedRepositories.join(", ")}\n` 
+    : "";
+
   if (!diff) {
     throw new Error(
       "PR diff is unavailable (no patch content returned). GitHub may omit patch content for very large changes.",
@@ -269,7 +277,7 @@ PR Title: ${pr.title}
 PR Author: ${pr.user?.login || "unknown"}
 Base: ${pr.base?.ref || "?"}  Head: ${pr.head?.ref || "?"}
 Changed files (subset):\n${stats}
-
+${impactContext}
 Diff (subset, may be truncated):\n${diff}
 `;
 
