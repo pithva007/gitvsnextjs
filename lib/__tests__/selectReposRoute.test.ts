@@ -94,6 +94,7 @@ describe("POST /api/integrations/github/select-repos", () => {
       ],
     });
     expect(response.status).toBe(200);
+    expect(mockPrisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
     expect(mockPrisma.gitHubRepo.updateMany).toHaveBeenNthCalledWith(1, {
       where: {
         userId: 42,
