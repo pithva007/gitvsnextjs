@@ -2,6 +2,47 @@ import { NextRequest, NextResponse } from "next/server";
 import { isHttpError, requireAuth, sanitizeError } from "@/lib/middleware";
 import { repositoryService } from "@/lib/services/repositoryService";
 
+function validateFilePath(filePath: string): string | null {
+  if (filePath.includes("..")) return "Path traversal detected";
+  if (filePath.startsWith("/")) return "Absolute path not allowed";
+  if (filePath.includes("\0")) return "Null bytes not allowed";
+  
+  // Prevent reading sensitive files like .env or private key files
+  const filename = filePath.split("/").pop() || "";
+  if (
+    filename === ".env" || 
+    filename.endsWith(".env") || 
+    filename.endsWith(".pem") || 
+    filename.endsWith(".key")
+  ) {
+    return "Access to sensitive files is restricted";
+  }
+
+  // Restrict file types: Only allow text files, reject common binaries
+  const blockedExtensions = [
+    // Images
+    "png", "jpg", "jpeg", "gif", "webp", "ico", "tiff", "bmp", "svg",
+    // Archives
+    "zip", "tar", "gz", "rar", "7z", "tgz",
+    // Binaries / Executables
+    "exe", "dll", "so", "bin", "dmg", "iso", "jar", "war", "class",
+    // Documents / Media
+    "pdf", "docx", "xlsx", "pptx", "mp3", "mp4", "wav", "avi", "mkv", "mov",
+    // Fonts
+    "woff", "woff2", "ttf", "eot", "otf"
+  ];
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  if (blockedExtensions.includes(ext)) {
+    return "Binary files and media are not supported for preview";
+  }
+
+  return null;
+}
+
+function encodePathSegments(filePath: string): string {
+  return filePath.split("/").map(encodeURIComponent).join("/");
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -18,6 +59,11 @@ export async function GET(
 
     if (!filePath) {
       return NextResponse.json({ error: "File path is required" }, { status: 400 });
+    }
+
+    const validatedError = validateFilePath(filePath);
+    if (validatedError) {
+      return NextResponse.json({ error: validatedError }, { status: 400 });
     }
 
     const repository = await repositoryService.getRepository(id, user.userId);
@@ -40,7 +86,8 @@ export async function GET(
     const repo = m[2];
     const branch = String(repository.defaultBranch || "main");
     
-    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${filePath}`;
+    const encodedPath = encodePathSegments(filePath);
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${encodedPath}`;
 
     const response = await fetch(rawUrl);
 
@@ -51,7 +98,18 @@ export async function GET(
       return NextResponse.json({ error: `GitHub API error: ${response.statusText}` }, { status: response.status });
     }
 
+    const contentLengthHeader = response.headers.get("content-length");
+    if (contentLengthHeader) {
+      const size = parseInt(contentLengthHeader, 10);
+      if (size > 1024 * 1024) { // 1MB limit
+        return NextResponse.json({ error: "File size exceeds 1MB limit" }, { status: 400 });
+      }
+    }
+
     const content = await response.text();
+    if (content.length > 1024 * 1024) { // 1MB limit
+      return NextResponse.json({ error: "File size exceeds 1MB limit" }, { status: 400 });
+    }
 
     return NextResponse.json({ content, path: filePath });
   } catch (error: any) {
