@@ -9,6 +9,7 @@ import * as path from "path";
 import * as fs from "fs/promises";
 import { createReadStream } from "fs";
 import readline from "readline";
+import { normalizeKnownRepoHttpUrl } from "@/lib/utils/repositoryUtils";
 
 const DEFAULT_GIT_TIMEOUT_MS = 2 * 60 * 1000;
 const GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -236,6 +237,22 @@ export class GitService {
       signal?: AbortSignal;
     },
   ): Promise<GitService> {
+    const normalizedUrl = normalizeKnownRepoHttpUrl(url);
+    if (!normalizedUrl) {
+      const sshMatch = url.match(/^git@([^:]+):([^\/]+)\/(.+?)(?:\.git)?$/);
+      if (!sshMatch) {
+        throw new Error("Invalid repository URL format");
+      }
+      const host = sshMatch[1];
+      const owner = sshMatch[2];
+      const repo = sshMatch[3];
+      const allowedHosts = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
+      if (!allowedHosts.has(host)) {
+        throw new Error(`Repository host ${host} is not allowed`);
+      }
+      url = `https://${host}/${owner}/${repo}`;
+    }
+
     await fs.mkdir(destination, { recursive: true });
     const depth = Math.max(1, Math.min(opts?.depth ?? 1000, 1000));
     const noSingleBranch = opts?.noSingleBranch ?? true;
@@ -915,12 +932,32 @@ export class GitService {
    */
   async getRepositorySize(): Promise<number> {
     try {
-      const { stdout } = await spawnOutput("du", ["-sb", "."], {
-        cwd: this.repoPath,
-        signal: this.signal,
-        timeout: DEFAULT_GIT_TIMEOUT_MS,
-      });
-      return parseInt(stdout.trim().split("\t")[0]);
+      let totalSize = 0;
+      const stack: string[] = [this.repoPath];
+
+      while (stack.length > 0) {
+        const currentPath = stack.pop()!;
+        try {
+          const entries = await fs.readdir(currentPath, { withFileTypes: true });
+          for (const entry of entries) {
+            const entryPath = path.join(currentPath, entry.name);
+            if (entry.isDirectory()) {
+              stack.push(entryPath);
+            } else if (entry.isFile()) {
+              try {
+                const stat = await fs.stat(entryPath);
+                totalSize += stat.size;
+              } catch {
+                // Ignore files that cannot be accessed or stated
+              }
+            }
+          }
+        } catch {
+          // Ignore directories that cannot be read
+        }
+      }
+
+      return totalSize;
     } catch (error: any) {
       return 0;
     }

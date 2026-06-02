@@ -6,6 +6,8 @@ import * as crypto from "crypto";
 import * as fs from "fs/promises";
 import { invalidateGeminiAnalysisCacheForRepository } from "./geminiAnalysisCacheService";
 import { FileChangeType } from "@prisma/client";
+import { repoSyncLimiter } from "../utils/concurrencyLimiter";
+import { withDbRetry } from "../utils/dbRetry";
 
 function yieldIfHighMemory(threshold = 0.7): Promise<void> {
   const usage = process.memoryUsage();
@@ -262,6 +264,27 @@ if (existingRepositoryName) {
 
       checkAborted();
 
+      await report({ progressPercent: 9, progressMessage: "Checking AI context configuration" });
+      
+      let knowledgeJson: ParsedRepositoryKnowledge | undefined = undefined;
+      let knowledgeMd: ParsedRepositoryKnowledge | undefined = undefined;
+      
+      try {
+        const jsonPath = path.join(tempDir, ".gitverse.json");
+        const jsonContent = await fs.readFile(jsonPath, "utf8");
+        knowledgeJson = gitverseConfigParser.parseJson(jsonContent);
+      } catch (e) { /* Ignore missing or invalid */ }
+      
+      try {
+        const mdPath = path.join(tempDir, ".gitverse.md");
+        const mdContent = await fs.readFile(mdPath, "utf8");
+        knowledgeMd = gitverseConfigParser.parseMarkdown(mdContent);
+      } catch (e) { /* Ignore missing or invalid */ }
+      
+      const parsedKnowledge = gitverseConfigParser.mergeKnowledge(knowledgeJson, knowledgeMd);
+
+      checkAborted();
+
       await report({
         progressPercent: 10,
         progressMessage: "Calculating repository size...",
@@ -287,7 +310,7 @@ if (existingRepositoryName) {
         progressPercent: 65,
         progressMessage: "Scanning files",
       });
-      const files = await gitService.getFileTree(opts?.scope);
+      const files = await gitService.getFileTree(opts?.scope || repository.targetDirectory || undefined);
       checkAborted();
 
       await report({
@@ -313,14 +336,14 @@ if (existingRepositoryName) {
         // Delete stale analysis data for a clean slate, then re-insert fresh data.
         // This avoids the skipDuplicates problem where old rows from a previous
         // partial run survive alongside new data.
-        await tx.commit.deleteMany({ where: { repositoryId } });
-        await tx.branch.deleteMany({ where: { repositoryId } });
-        await tx.file.deleteMany({ where: { repositoryId } });
-        await tx.contributor.deleteMany({ where: { repositoryId } });
-        await tx.language.deleteMany({ where: { repositoryId } });
+        await prisma.commit.deleteMany({ where: { repositoryId } });
+        await prisma.branch.deleteMany({ where: { repositoryId } });
+        await prisma.file.deleteMany({ where: { repositoryId } });
+        await prisma.contributor.deleteMany({ where: { repositoryId } });
+        await prisma.language.deleteMany({ where: { repositoryId } });
 
         // Update README
-        await tx.repository.update({
+        await prisma.repository.update({
           where: { id: repositoryId },
           data: {
             readmePath: readme?.path ?? "README.md",
@@ -331,7 +354,7 @@ if (existingRepositoryName) {
 
         // Insert branches
         if (branches.length > 0) {
-          await tx.branch.createMany({
+          await prisma.branch.createMany({
             data: branches.map((branch) => ({
               name: branch.name,
               isDefault: branch.isDefault,
@@ -349,7 +372,7 @@ if (existingRepositoryName) {
           for (let i = 0; i < commits.length; i += commitChunkSize) {
             const chunk = commits.slice(i, i + commitChunkSize);
 
-            await tx.commit.createMany({
+            await prisma.commit.createMany({
               data: chunk.map((commit) => ({
                 hash: commit.hash,
                 shortHash: commit.shortHash,
@@ -369,7 +392,7 @@ if (existingRepositoryName) {
               })),
             });
 
-            const insertedCommits = await tx.commit.findMany({
+            const insertedCommits = await prisma.commit.findMany({
               where: {
                 repositoryId,
                 hash: { in: chunk.map((c: { hash: string }) => c.hash) },
@@ -403,7 +426,7 @@ if (existingRepositoryName) {
             );
 
             if (fileChanges.length > 0) {
-              await tx.fileChange.createMany({ data: fileChanges });
+              await prisma.fileChange.createMany({ data: fileChanges });
             }
           }
         }
@@ -413,7 +436,7 @@ if (existingRepositoryName) {
           const chunkSize = 500;
           for (let i = 0; i < files.length; i += chunkSize) {
             const chunk = files.slice(i, i + chunkSize);
-            await tx.file.createMany({
+            await prisma.file.createMany({
               data: chunk.map((file) => ({
                 path: file.path,
                 name: file.name,
@@ -432,7 +455,7 @@ if (existingRepositoryName) {
           const totalContributions = contributors.reduce(
             (sum: number, c: { commits: number }) => sum + c.commits, 0,
           );
-          await tx.contributor.createMany({
+          await prisma.contributor.createMany({
             data: contributors.map((contributor: { commits: number; name: string; email: string; additions: number; deletions: number; firstCommit: Date; lastCommit: Date }) => {
               const percentage =
                 totalContributions > 0
@@ -495,7 +518,7 @@ if (existingRepositoryName) {
             }),
           );
 
-          await tx.language.createMany({
+          await prisma.language.createMany({
             data: languagesWithAdjustedPercentage.map(
               (language: { name: string; percentage: number; bytes: number; lines: number }) => ({
                 name: language.name,
@@ -509,7 +532,7 @@ if (existingRepositoryName) {
         }
 
         // Final status update
-        await tx.repository.update({
+        await prisma.repository.update({
           where: { id: repositoryId },
           data: {
             status: "completed",
@@ -519,6 +542,13 @@ if (existingRepositoryName) {
           },
         });
       });
+      
+      // Save repository knowledge if found
+      try {
+        await repositoryKnowledgeService.upsertKnowledge(repositoryId, parsedKnowledge);
+      } catch (err) {
+        console.warn(`Failed to save repository knowledge for ${repositoryId}:`, err);
+      }
 
       // Cache invalidation (outside transaction — best-effort, non-critical)
       try {
@@ -562,8 +592,8 @@ if (existingRepositoryName) {
   async getRepository(id: number, userId: number) {
     const repository = await prisma.repository.findFirst({
       where: {
-        id,
-        userId,
+        id: Number(id),
+        userId: Number(userId),
       },
       include: {
         branches: {
@@ -586,6 +616,7 @@ if (existingRepositoryName) {
           orderBy: { path: "asc" },
           take: 500,
         },
+        knowledge: true,
       },
     });
 
@@ -667,29 +698,27 @@ if (existingRepositoryName) {
       throw new Error("Repository not found");
     }
 
-    const [
-      totalCommits,
-      totalContributors,
-      totalFiles,
-      totalBranches,
-      recentActivity,
-    ] = await Promise.all([
-      prisma.commit.count({ where: { repositoryId: id } }),
-      prisma.contributor.count({ where: { repositoryId: id } }),
-      prisma.file.count({ where: { repositoryId: id } }),
-      prisma.branch.count({ where: { repositoryId: id } }),
-      prisma.commit.findMany({
-        where: { repositoryId: id },
-        orderBy: { committedAt: "desc" },
-        take: 10,
-        select: {
-          shortHash: true,
-          message: true,
-          authorName: true,
-          committedAt: true,
-        },
-      }),
-    ]);
+    // Batch DB queries to avoid connection pool exhaustion under concurrent load.
+    // Counts are cheap and fast; run them together, then fetch the heavier query.
+    const [totalCommits, totalContributors, totalFiles, totalBranches] =
+      await Promise.all([
+        prisma.commit.count({ where: { repositoryId: id } }),
+        prisma.contributor.count({ where: { repositoryId: id } }),
+        prisma.file.count({ where: { repositoryId: id } }),
+        prisma.branch.count({ where: { repositoryId: id } }),
+      ]);
+
+    const recentActivity = await prisma.commit.findMany({
+      where: { repositoryId: id },
+      orderBy: { committedAt: "desc" },
+      take: 10,
+      select: {
+        shortHash: true,
+        message: true,
+        authorName: true,
+        committedAt: true,
+      },
+    });
 
     return {
       totalCommits,

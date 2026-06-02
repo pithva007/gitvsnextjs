@@ -3,7 +3,13 @@ import {
   normalizeTargetDirectory,
 } from "@/lib/utils/repositoryUtils";
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth, sanitizeError, getPrismaErrorResponse } from "@/lib/middleware";
+import { countAttempts, recordAttempt } from "@/lib/services/rateLimitService";
+import {
+  isHttpError,
+  requireAuth,
+  sanitizeError,
+  getPrismaErrorResponse,
+} from "@/lib/middleware";
 import { repositoryService } from "@/lib/services/repositoryService";
 import { analysisJobService } from "@/lib/services/analysisJobService";
 import { triggerAnalysisWorkerWorkflow } from "@/lib/services/analysisWorkerTriggerService";
@@ -62,6 +68,17 @@ function normalizeGitHubRepoUrl(input: string): string | null {
 export async function POST(request: NextRequest) {
   try {
     const user = await requireAuth(request);
+
+    const attemptsCount = await countAttempts(
+      String(user.userId),
+      "REPOSITORY_ANALYSIS",
+      24 * 60 * 60 * 1000
+    );
+
+    if (attemptsCount >= 5) {
+      return apiError("Analysis rate limit exceeded. Please try again later.", 429);
+    }
+
     const body = await request.json();
     const { name, url, description, targetDirectory } = body;
 
@@ -83,9 +100,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error: "NOT_FOUND",
-          message: "Repository not found. Please ensure the URL is correct and the repository is public.",
+          message:
+            "Repository not found. Please ensure the URL is correct and the repository is public.",
         },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -97,6 +115,34 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let trimmedScope: string | undefined = undefined;
+    const rawScope = body.scope;
+    if (rawScope != null) {
+      if (typeof rawScope !== "string") {
+        return NextResponse.json(
+          {
+            error:
+              "Invalid scope. Only alphanumeric characters, underscore, dot, slash, and hyphen are allowed.",
+          },
+          { status: 400 },
+        );
+      }
+
+      const normalizedScope = rawScope.trim();
+      if (normalizedScope) {
+        if (!isValidGitScope(normalizedScope)) {
+          return NextResponse.json(
+            {
+              error:
+                "Invalid scope. Only alphanumeric characters, underscore, dot, slash, and hyphen are allowed.",
+            },
+            { status: 400 },
+          );
+        }
+        trimmedScope = normalizedScope;
+      }
+    }
+
     const repository = await repositoryService.createRepository({
       name,
       url: normalizedUrl,
@@ -105,19 +151,8 @@ export async function POST(request: NextRequest) {
       userId: user.userId,
     });
 
-    console.log("Repository created:", repository.id);
+    logger.info({ repositoryId: repository.id }, "Repository created");
 
-    const rawScope = body.scope;
-    if (rawScope != null && (typeof rawScope !== "string" || !isValidGitScope(rawScope))) {
-      return NextResponse.json(
-        { error: "Invalid scope. Only alphanumeric characters, underscore, dot, slash, and hyphen are allowed." },
-        { status: 400 },
-      );
-    }
-    let trimmedScope: string | undefined = undefined;
-    if (rawScope && typeof rawScope === "string") {
-      trimmedScope = rawScope.trim();
-    }
     const job = await analysisJobService.createRepositoryAnalysisJob({
       repositoryId: repository.id,
       userId: user.userId,
@@ -126,6 +161,13 @@ export async function POST(request: NextRequest) {
 
     kickLocalRunner(request);
     kickProductionWorker();
+
+    await recordAttempt({
+      key: String(user.userId),
+      type: "REPOSITORY_ANALYSIS",
+      success: true,
+      userId: user.userId,
+    });
 
     return apiSuccess(
       {
@@ -154,7 +196,7 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   try {
     const user = await requireAuth(request);
-    
+
     const { searchParams } = new URL(request.url);
     const limitParam = searchParams.get("limit");
     const cursorParam = searchParams.get("cursor");
@@ -162,7 +204,7 @@ export async function GET(request: NextRequest) {
     const repositories = await repositoryService.listRepositories(
       user.userId,
       limitParam ? parseInt(limitParam) : 10,
-      cursorParam ? parseInt(cursorParam) : undefined
+      cursorParam ? parseInt(cursorParam) : undefined,
     );
 
     return apiSuccess({ repositories });

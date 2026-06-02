@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyGitHubWebhookSignature } from "@/lib/utils/githubWebhook";
+import { GithubWebhookVerifier } from "@/lib/services/githubWebhookVerifier";
 import prisma from "@/lib/prisma";
 import crypto from "crypto";
 import { QuotaService } from "@/lib/services/quotaService";
 import { getClientIp } from "@/lib/services/rateLimitService";
+import { SafeHttpClient } from "@/services/security/safe-http-client";
+import { webhookQueue } from "@/lib/services/webhook-queue";
+import { dbHealthService } from "@/lib/services/db-health";
+import { webhookRetryService } from "@/lib/services/webhook-retry";
 
 export const runtime = "nodejs";
 
@@ -58,17 +63,17 @@ export async function POST(request: NextRequest) {
   const event = request.headers.get("x-github-event");
   const secret = process.env.GITHUB_WEBHOOK_SECRET || "";
 
-  if (
-    !verifyGitHubWebhookSignature({
-      rawBody,
-      signature256Header: signature,
-      webhookSecret: secret,
-    })
-  ) {
+  const isValid = await GithubWebhookVerifier.verifySignature(request, rawBody) || verifyGitHubWebhookSignature({
+    rawBody,
+    signature256Header: signature,
+    webhookSecret: secret,
+  });
+
+  if (!isValid) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  if (event !== "pull_request" && event !== "issues") {
+  if (event !== "pull_request" && event !== "issues" && event !== "push") {
     return NextResponse.json(
       { ok: true, ignored: true, event },
       { status: 200 },
@@ -105,6 +110,8 @@ export async function POST(request: NextRequest) {
         { status: 200 },
       );
     }
+  } else if (event === "push") {
+    // We accept all push events
   }
 
   // Avoid replying to bots (including ourselves)
@@ -120,11 +127,11 @@ export async function POST(request: NextRequest) {
   const number = payload.pull_request?.number || payload.issue?.number;
   const installationId = payload.installation?.id;
 
-  if (!owner || !repo || !number || !installationId) {
+  if (!owner || !repo || (!number && event !== "push") || !installationId) {
     return NextResponse.json(
       {
         error: "Missing required fields",
-        details: { owner, repo, number, installationId },
+        details: { owner, repo, number, installationId, event },
       },
       { status: 400 },
     );
@@ -147,24 +154,14 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Trigger internal worker asynchronously
-    const baseUrl = process.env.NEXTAUTH_URL || `http://${request.headers.get("host") || "localhost:3000"}`;
-    const workerUrl = `${baseUrl}/api/internal/worker/webhook`;
-    
-    // Generate auth token for internal worker
-    const internalSecret = process.env.GITHUB_WEBHOOK_SECRET || process.env.JWT_SECRET || "";
-    const internalToken = `Bearer ${crypto.createHash('sha256').update(internalSecret).digest('hex')}`;
+    // Automatically retry any previously failed jobs occasionally
+    // (This is lightweight and ensures dead-letter recovery without a cron)
+    webhookRetryService.requeueFailedJobs().catch(() => {});
 
-    // Non-blocking fetch
-    fetch(workerUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": internalToken,
-      },
-      body: JSON.stringify({ eventId: webhookEvent.id }),
-    }).catch(err => {
-      console.error("Failed to trigger webhook worker:", err);
+    // Trigger internal workers asynchronously via queue manager
+    const baseUrl = process.env.NEXTAUTH_URL || `http://${request.headers.get("host") || "localhost:3000"}`;
+    webhookQueue.triggerWorkers(baseUrl).catch((err: any) => {
+      console.error("[Webhook] Failed to trigger queue workers:", err);
     });
 
     return NextResponse.json(
