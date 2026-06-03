@@ -5,8 +5,7 @@ import * as path from "path";
 import * as os from "os";
 import prisma from "@/lib/prisma";
 import crypto from "crypto";
-import { getDecryptedGitHubToken } from "@/lib/utils/githubToken";
-import { GitHubService } from "@/lib/services/githubService";
+import { GitHubService } from "./githubService";
 
 const execFileAsync = promisify(execFile);
 
@@ -287,6 +286,40 @@ export async function runSecuritySandbox(params: {
     ]);
 
     // Update sandbox record with results
+    const hasSecrets = (result.testResults as any[]).some(
+      (t) => t.testName === "secret_exposure" && !t.passed
+    );
+
+    if (hasSecrets && params.pullRequestId) {
+      const repo = await prisma.repository.findUnique({
+        where: { id: params.repositoryId },
+        include: { 
+          user: { include: { githubAccount: true } }, 
+          pullRequests: { where: { id: params.pullRequestId } } 
+        }
+      });
+
+      if (repo && repo.user.githubAccount && repo.pullRequests.length > 0) {
+        try {
+          const githubService = new GitHubService(repo.user.githubAccount.accessToken);
+          const parts = repo.url.split("/");
+          const owner = parts[parts.length - 2];
+          const name = parts[parts.length - 1];
+          const pullNumber = repo.pullRequests[0].prNumber;
+          
+          await githubService.updatePullRequest(owner, name, pullNumber, {
+            state: "closed",
+          });
+          await githubService.postPullRequestComment(
+            owner, name, pullNumber,
+            "🚨 **CRITICAL SECURITY ALERT** 🚨\n\nThis PR has been automatically quarantined and closed because high-entropy secrets were detected. Please revoke the secrets immediately and remove them from your commit history before reopening."
+          );
+        } catch (e) {
+          console.error("Failed to quarantine PR:", e);
+        }
+      }
+    }
+
     await prisma.securitySandbox.update({
       where: { id: sandbox.id },
       data: {

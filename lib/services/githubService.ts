@@ -422,6 +422,22 @@ export class GitHubService {
   }
 
   /**
+   * Update pull request state (e.g. to close it)
+   */
+  async updatePullRequest(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    data: { state?: "open" | "closed"; title?: string; body?: string }
+  ): Promise<GitHubPullRequest> {
+    const response = await this.client.patch(
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      data
+    );
+    return response.data;
+  }
+
+  /**
    * List pull request files (includes patch hunks when available)
    */
   async getPullRequestFiles(
