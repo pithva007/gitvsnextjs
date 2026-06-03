@@ -1,8 +1,11 @@
 "use client";
 
 export const dynamic = "force-dynamic";
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useRecentRepos } from "@/hooks/useRecentRepos";
+import { isValidGithubUrl } from "@/lib/utils/validators";
+import { RecentReposList } from "@/components/RecentReposList";
 import {
   GitBranch,
   TrendingUp,
@@ -23,6 +26,7 @@ import {
   Button,
   Input,
   EmptyState,
+  Skeleton,
 } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { buildApiUrl } from "@/services/apiConfig";
@@ -323,23 +327,23 @@ export default function Dashboard() {
         <div className="space-y-6">
           {/* Welcome skeleton */}
           <div className="space-y-2">
-            <Skeleton width="250px" height="28px" />
-            <Skeleton width="400px" height="18" />
+            <Skeleton style={{ width: "250px", height: "28px" }} />
+            <Skeleton style={{ width: "400px", height: "18px" }} />
           </div>
 
           {/* Input skeleton */}
           <div className="p-6 border rounded-lg space-y-3">
-            <Skeleton width="100%" height="40" />
-            <Skeleton width="180" height="40" />
+            <Skeleton style={{ width: "100%", height: "40px" }} />
+            <Skeleton style={{ width: "180px", height: "40px" }} />
           </div>
 
           {/* Stats skeleton */}
           <div className="grid grid-cols-4 gap-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="p-4 border rounded-lg space-y-3">
-                <Skeleton width="60%" height="16" />
-                <Skeleton width="40%" height="28" />
-                <Skeleton width="80%" height="12" />
+                <Skeleton style={{ width: "60%", height: "16px" }} />
+                <Skeleton style={{ width: "40%", height: "28px" }} />
+                <Skeleton style={{ width: "80%", height: "12px" }} />
               </div>
             ))}
           </div>
@@ -347,19 +351,19 @@ export default function Dashboard() {
           {/* Cards skeleton */}
           <div className="grid grid-cols-3 gap-6">
             <div className="col-span-2 space-y-3">
-              <Skeleton width="40%" height="20" />
+              <Skeleton style={{ width: "40%", height: "20px" }} />
               {Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="p-4 border rounded-lg space-y-2">
-                  <Skeleton width="30%" height="18" />
-                  <Skeleton width="70%" height="14" />
+                  <Skeleton style={{ width: "30%", height: "18px" }} />
+                  <Skeleton style={{ width: "70%", height: "14px" }} />
                 </div>
               ))}
             </div>
 
             <div className="space-y-3">
-              <Skeleton width="50%" height="20" />
+              <Skeleton style={{ width: "50%", height: "20px" }} />
               {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} width="100%" height="40" />
+                <Skeleton key={i} style={{ width: "100%", height: "40px" }} />
               ))}
             </div>
           </div>
@@ -622,6 +626,7 @@ export default function Dashboard() {
                         {activity.time}
                       </p>
                     </div>
+                  </div>
                   ))}
                 </div>
               )}
