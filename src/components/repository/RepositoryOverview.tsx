@@ -31,6 +31,7 @@ import { BeginnerQuestionsPanel } from "@/components/repository/BeginnerQuestion
 import { FirstPRSimulator } from "@/components/repository/FirstPRSimulator";
 import { ContributionPathGenerator } from "@/components/repository/ContributionPathGenerator";
 import { DeadCodeDetector } from "@/components/repository/DeadCodeDetector";
+import { ArchitecturalDriftDetector } from "@/components/repository/ArchitecturalDriftDetector";
 import { QuickStartChecklist } from "@/components/repository/QuickStartChecklist";
 import { FolderImportanceGuide } from "@/components/repository/FolderImportanceGuide";
 import { SavedModulesPanel } from "@/components/repository/SavedModulesPanel";
@@ -555,6 +556,8 @@ export const RepositoryOverview = ({
         <ContributionPathGenerator repository={repositoryMetadata} />
 
         <DeadCodeDetector repository={repositoryMetadata} />
+
+        <ArchitecturalDriftDetector repository={repositoryMetadata} />
 
         <BeginnerModeToggle
           enabled={isBeginnerMode}
