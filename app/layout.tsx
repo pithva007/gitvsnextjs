@@ -8,7 +8,7 @@ import { NextAuthProvider } from "@/components/auth/NextAuthProvider";
 import { Toaster } from "@/components/ui/toaster";
 import { ScrollToTop } from "@/components/ui/ScrollToTop";
 import { FocusRingManager } from "@/components/ui/FocusRingManager";
-import SessionGuard from "@/components/auth/SessionGuard";
+import ProgressBarProvider from "@/components/providers/ProgressBarProvider";
 import "./globals.css";
 
 
@@ -85,12 +85,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
         <ThemeProvider>
           <NextAuthProvider>
-            <SessionGuard>
-              <AuthProvider>
-                <FocusRingManager />
+            <AuthProvider>
+              <FocusRingManager />
+              <ProgressBarProvider>
                 <main id="main-content">
                   {children}
                 </main>
+              </ProgressBarProvider>
 
                 <Toaster />
                 <ScrollToTop />
