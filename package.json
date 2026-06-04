@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "cross-env NODE_OPTIONS=\"--dns-result-order=ipv4first --no-network-family-autoselection\" next dev",
     "build": "prisma generate && next build",
+    "analyze": "cross-env ANALYZE=true next build",
     "typecheck": "prisma generate && rm -f tsconfig.tsbuildinfo && tsc -p tsconfig.json --noEmit",
     "build:worker": "tsc -p tsconfig.worker.json",
     "preworker": "node -e \"const fs=require('fs'); const cp=require('child_process'); if(fs.existsSync('node_modules/.bin/tsc')){cp.execSync('npm run -s build:worker',{stdio:'inherit'});} else {console.log('Skipping build:worker (tsc not installed)');}\"",
@@ -80,6 +81,7 @@
   },
   "devDependencies": {
     "@faker-js/faker": "^10.4.0",
+    "@next/bundle-analyzer": "^16.2.7",
     "@playwright/test": "^1.60.0",
     "@testing-library/jest-dom": "^6.9.0",
     "@testing-library/react": "^16.3.0",
