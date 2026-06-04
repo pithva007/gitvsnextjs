@@ -8,8 +8,11 @@ const http_1 = __importDefault(require("http"));
 const analysisWorker_1 = require("./analysisWorker");
 const prisma_1 = require("../lib/prisma");
 const port = Number(process.env.PORT || "8080");
+const GRACE_PERIOD_MS = 35_000;
 let healthServer = null;
 let stopping = false;
+let workerDone = null;
+let workerFinished = null;
 function startHealthServer() {
     const server = http_1.default.createServer((req, res) => {
         if (stopping) {
@@ -22,6 +25,13 @@ function startHealthServer() {
             res.statusCode = 200;
             res.setHeader("content-type", "text/plain; charset=utf-8");
             res.end("ok");
+            return;
+        }
+        if (req.url === "/drain") {
+            void drain("DRAIN_ENDPOINT");
+            res.statusCode = 200;
+            res.setHeader("content-type", "text/plain; charset=utf-8");
+            res.end("drain initiated");
             return;
         }
         if (req.url === "/metrics") {
@@ -60,15 +70,29 @@ function startHealthServer() {
     });
     return server;
 }
-const shutdown = async (signal) => {
+const drain = async (signal) => {
     if (stopping)
         return;
     stopping = true;
-    console.log(`received ${signal}, shutting down worker server...`);
+    console.log(`received ${signal}, draining worker server...`);
     if (healthServer) {
         await new Promise((resolve) => healthServer.close(() => resolve()));
     }
+    if (workerDone) {
+        workerDone();
+    }
+    if (workerFinished) {
+        const timer = setTimeout(() => {
+            console.error(`worker drain timed out after ${GRACE_PERIOD_MS}ms, forcing exit`);
+            (0, prisma_1.disconnectPrisma)().finally(() => process.exit(1));
+        }, GRACE_PERIOD_MS);
+        await workerFinished;
+        clearTimeout(timer);
+    }
     await (0, prisma_1.disconnectPrisma)();
+};
+const shutdown = async (signal) => {
+    await drain(signal);
     process.exit(0);
 };
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
@@ -77,7 +101,10 @@ process.on("SIGQUIT", () => void shutdown("SIGQUIT"));
 process.on("SIGHUP", () => void shutdown("SIGHUP"));
 async function main() {
     healthServer = startHealthServer();
-    await (0, analysisWorker_1.startAnalysisWorkerLoop)();
+    workerFinished = new Promise((resolve) => {
+        workerDone = resolve;
+    });
+    await (0, analysisWorker_1.startAnalysisWorkerLoop)({ signalHandlers: false });
 }
 main().catch(async (e) => {
     console.error("worker-server fatal:", e);

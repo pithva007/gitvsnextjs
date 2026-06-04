@@ -250,6 +250,36 @@ class AnalysisJobService {
             return null;
         return prisma_1.default.analysisJob.findUnique({ where: { id: claimedId } });
     }
+    async releaseLock(params) {
+        const where = { id: params.jobId };
+        if (params.workerId) {
+            where.lockedBy = params.workerId;
+        }
+        await prisma_1.default.analysisJob.update({
+            where,
+            data: {
+                lockExpiresAt: new Date(),
+            },
+        });
+    }
+    async markDrainReleased(params) {
+        const where = { id: params.jobId };
+        if (params.workerId) {
+            where.lockedBy = params.workerId;
+        }
+        await prisma_1.default.analysisJob.update({
+            where,
+            data: {
+                status: "QUEUED",
+                lockExpiresAt: new Date(),
+                lockedAt: null,
+                lockedBy: null,
+                nextRunAt: new Date(),
+                progressMessage: "Worker shutting down \u2014 job released for reprocessing",
+                error: params.error,
+            },
+        });
+    }
     async cleanupStaleJobs(gracePeriodMs) {
         if (gracePeriodMs === undefined)
             gracePeriodMs = 10 * 60 * 1000;

@@ -1302,6 +1302,105 @@ describe("AnalysisJobService – getAnalysisStats edge cases", () => {
   });
 });
 
+describe("AnalysisJobService – releaseLock", () => {
+  let service: AnalysisJobService;
+
+  beforeEach(() => {
+    service = new AnalysisJobService();
+  });
+
+  it("sets lockExpiresAt to current time for a job", async () => {
+    asMock(mockPrisma.analysisJob.update).mockResolvedValueOnce({});
+
+    await service.releaseLock({ jobId: "job-1", workerId: "worker-A" });
+
+    const call = asMock(mockPrisma.analysisJob.update).mock.calls[0][0];
+    expect(call.where.id).toBe("job-1");
+    expect(call.where.lockedBy).toBe("worker-A");
+    expect(call.data.lockExpiresAt).toBeInstanceOf(Date);
+  });
+
+  it("releases lock without workerId filter", async () => {
+    asMock(mockPrisma.analysisJob.update).mockResolvedValueOnce({});
+
+    await service.releaseLock({ jobId: "job-1" });
+
+    const call = asMock(mockPrisma.analysisJob.update).mock.calls[0][0];
+    expect(call.where.id).toBe("job-1");
+    expect(call.where.lockedBy).toBeUndefined();
+  });
+
+  it("propagates database errors", async () => {
+    asMock(mockPrisma.analysisJob.update).mockRejectedValueOnce(
+      new Error("connection refused"),
+    );
+
+    await expect(service.releaseLock({ jobId: "job-1" })).rejects.toThrow("connection refused");
+  });
+});
+
+describe("AnalysisJobService – markDrainReleased", () => {
+  let service: AnalysisJobService;
+
+  beforeEach(() => {
+    service = new AnalysisJobService();
+  });
+
+  it("sets status to QUEUED and expires the lock", async () => {
+    asMock(mockPrisma.analysisJob.update).mockResolvedValueOnce({});
+
+    await service.markDrainReleased({
+      jobId: "job-1",
+      workerId: "worker-A",
+      error: "Worker shutting down",
+    });
+
+    const call = asMock(mockPrisma.analysisJob.update).mock.calls[0][0];
+    expect(call.where.id).toBe("job-1");
+    expect(call.where.lockedBy).toBe("worker-A");
+    expect(call.data.status).toBe("QUEUED");
+    expect(call.data.lockedAt).toBeNull();
+    expect(call.data.lockedBy).toBeNull();
+    expect(call.data.lockExpiresAt).toBeInstanceOf(Date);
+    expect(call.data.progressMessage).toContain("released");
+  });
+
+  it("uses workerId in the WHERE clause when provided", async () => {
+    asMock(mockPrisma.analysisJob.update).mockResolvedValueOnce({});
+
+    await service.markDrainReleased({
+      jobId: "job-1",
+      workerId: "worker-B",
+      error: "timeout",
+    });
+
+    const call = asMock(mockPrisma.analysisJob.update).mock.calls[0][0];
+    expect(call.where.lockedBy).toBe("worker-B");
+  });
+
+  it("skips workerId filter when not provided", async () => {
+    asMock(mockPrisma.analysisJob.update).mockResolvedValueOnce({});
+
+    await service.markDrainReleased({
+      jobId: "job-1",
+      error: "shutdown",
+    });
+
+    const call = asMock(mockPrisma.analysisJob.update).mock.calls[0][0];
+    expect(call.where.lockedBy).toBeUndefined();
+  });
+
+  it("propagates database errors", async () => {
+    asMock(mockPrisma.analysisJob.update).mockRejectedValueOnce(
+      new Error("deadlock detected"),
+    );
+
+    await expect(
+      service.markDrainReleased({ jobId: "job-1", error: "err" }),
+    ).rejects.toThrow("deadlock detected");
+  });
+});
+
 describe("AnalysisJobService – cleanupStaleJobs edge cases", () => {
   let service: AnalysisJobService;
 
@@ -1366,6 +1465,8 @@ describe("AnalysisJobService – exports", () => {
     expect(typeof analysisJobService.reclaimOrphanedJobs).toBe("function");
     expect(typeof analysisJobService.countOrphanedJobs).toBe("function");
     expect(typeof analysisJobService.getAnalysisStats).toBe("function");
+    expect(typeof analysisJobService.releaseLock).toBe("function");
+    expect(typeof analysisJobService.markDrainReleased).toBe("function");
   });
 
   it("singleton methods are bound to the instance", () => {

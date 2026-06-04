@@ -16,6 +16,7 @@ process.on("unhandledRejection", async (reason) => {
 const POLL_INTERVAL_MS = 2000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const LOCK_MS = 5 * 60_000;
+const GRACE_PERIOD_MS = 30_000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,6 +28,11 @@ function getWorkerId(): string {
     `${os.hostname()}-${process.pid}-${Math.random().toString(16).slice(2)}`
   );
 }
+
+let currentJob: AnalysisJob | null = null;
+let jobRunning = false;
+let stopping = false;
+let forcedExitTimer: NodeJS.Timeout | null = null;
 
 async function runJob(
   job: AnalysisJob,
@@ -46,6 +52,7 @@ async function runJob(
     progressMessage?: string;
     progressDetails?: unknown;
   }) => {
+    if (stopping) return;
     const now = Date.now();
 
     const percentChanged =
@@ -78,9 +85,17 @@ async function runJob(
   };
 
   try {
+    currentJob = job;
+    jobRunning = true;
+
     await writeProgress({ progressPercent: 0, progressMessage: "Processing" });
 
     heartbeatTimer = setInterval(() => {
+      if (stopping) {
+        clearInterval(heartbeatTimer!);
+        heartbeatTimer = null;
+        return;
+      }
       analysisJobService
         .heartbeat({
           jobId: job.id,
@@ -90,6 +105,8 @@ async function runJob(
         .catch((e) => console.error("heartbeat failed", e));
     }, params.heartbeatIntervalMs);
 
+    if (stopping) return;
+
     if (job.type !== "repository_analysis") {
       throw new Error(`Unsupported job type: ${job.type}`);
     }
@@ -97,12 +114,17 @@ async function runJob(
     const details = job.progressDetails as any;
     const scope = details?.scope;
 
+    if (stopping) return;
+
     await repositoryService.analyzeRepository(job.repositoryId, job.userId, {
       scope,
       onProgress: async (update) => {
+        if (stopping) return;
         await writeProgress(update);
       },
     });
+
+    if (stopping) return;
 
     await analysisJobService.markDone({
       jobId: job.id,
@@ -121,6 +143,8 @@ async function runJob(
     });
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
+    jobRunning = false;
+    currentJob = null;
   }
 }
 
@@ -130,29 +154,64 @@ export async function startAnalysisWorkerLoop(opts?: {
   heartbeatIntervalMs?: number;
   lockMs?: number;
   once?: boolean;
+  gracePeriodMs?: number;
+  signalHandlers?: boolean;
 }) {
   const workerId = opts?.workerId || getWorkerId();
   const pollIntervalMs = opts?.pollIntervalMs ?? POLL_INTERVAL_MS;
   const heartbeatIntervalMs =
     opts?.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
   const lockMs = opts?.lockMs ?? LOCK_MS;
+  const gracePeriodMs = opts?.gracePeriodMs ?? GRACE_PERIOD_MS;
+
+  const registerHandlers = opts?.signalHandlers ?? true;
 
   console.log(`analysis worker starting: ${workerId}`);
-
-  let stopping = false;
 
   const shutdown = async (signal: string) => {
     if (stopping) return;
     stopping = true;
     console.log(`received ${signal}, shutting down...`);
+
+    if (forcedExitTimer) clearTimeout(forcedExitTimer);
+    forcedExitTimer = setTimeout(() => {
+      console.error(`grace period expired (${gracePeriodMs}ms), forcing exit`);
+      process.exit(1);
+    }, gracePeriodMs);
+
+    if (jobRunning && currentJob) {
+      const jobId = currentJob.id;
+      console.log(`draining job ${jobId} before exit...`);
+      try {
+        await analysisJobService.markDrainReleased({
+          jobId,
+          workerId,
+          error: "Worker shutting down",
+        });
+        console.log(`job ${jobId} released for reprocessing`);
+      } catch (drainErr) {
+        console.error(`failed to release job ${jobId} during drain:`, drainErr);
+        try {
+          await analysisJobService.releaseLock({ jobId, workerId });
+        } catch (lockErr) {
+          console.error(`failed to release lock for job ${jobId}:`, lockErr);
+        }
+      }
+    }
+
+    if (forcedExitTimer) clearTimeout(forcedExitTimer);
+    forcedExitTimer = null;
+
     await disconnectPrisma();
     process.exit(0);
   };
 
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGQUIT", () => void shutdown("SIGQUIT"));
-  process.on("SIGHUP", () => void shutdown("SIGHUP"));
+  if (registerHandlers) {
+    process.on("SIGTERM", () => void shutdown("SIGTERM"));
+    process.on("SIGINT", () => void shutdown("SIGINT"));
+    process.on("SIGQUIT", () => void shutdown("SIGQUIT"));
+    process.on("SIGHUP", () => void shutdown("SIGHUP"));
+  }
 
   while (!stopping) {
     try {
@@ -189,7 +248,10 @@ const isMain =
   typeof require !== "undefined" && (require as any).main === module;
 if (isMain) {
   const once = !!process.env.WORKER_ONCE;
-  startAnalysisWorkerLoop({ once }).catch(async (e) => {
+  const gracePeriodMs = process.env.WORKER_GRACE_PERIOD_MS
+    ? Number(process.env.WORKER_GRACE_PERIOD_MS)
+    : undefined;
+  startAnalysisWorkerLoop({ once, gracePeriodMs, signalHandlers: true }).catch(async (e) => {
     console.error("worker fatal:", e);
     await disconnectPrisma();
     process.exit(1);
