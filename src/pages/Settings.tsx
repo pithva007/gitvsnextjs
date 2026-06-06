@@ -7,7 +7,7 @@ import Image from "next/image";
 import { User, Lock, Shield, Trash2, AlertCircle, Sun, Moon, Cpu } from "lucide-react";
 import { Save } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
-import { useTheme } from "@/context/ThemeContext";
+import { useTheme } from "@/contexts/ThemeContext";
 import {
   Card,
   CardHeader,
@@ -20,8 +20,9 @@ import {
   EmptyState,
   Modal,
 } from "@/components/ui";
-import SettingsSkeleton from "@/components/ui/SettingsSkeleton";
+import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
+import SettingsSkeleton from "@/components/ui/SettingsSkeleton";
 import { buildApiUrl } from "@/services/apiConfig";
 import axios from "axios";
 import { useAISettings, AIProviderType } from "@/hooks/useAISettings";

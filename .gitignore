@@ -1,32 +1,52 @@
 # dependencies
-node_modules
-.pnpm-debug.log*
+node_modules/
+.pnp
+.pnp.js
 
-# Next.js build
+# testing
+coverage/
+test-results/
+playwright-report/
+test-output.txt
+
+# next.js
 .next/
 out/
 
-# production/build outputs
+# build artifacts
 build/
 dist/
 dist-worker/
+tsconfig.tsbuildinfo
+.swc/
 
-# debug logs
+# misc
+.DS_Store
+*.pem
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-
-# local env files
-.env
-.env*.local
+.pnpm-debug.log*
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
 
-# testing
-coverage/
-playwright-report/
-test-results/
-test-output.txt
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
