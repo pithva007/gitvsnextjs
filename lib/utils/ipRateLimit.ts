@@ -37,8 +37,8 @@ async function checkAiRateLimit(
     const count = await prisma.aiRequestLog.count({ where });
     return count < maxRequests;
   } catch (error) {
-    console.error("AI rate limit check failed, allowing request:", error);
-    return true;
+    console.error("AI rate limit check failed:", error);
+    return false;
   }
 }
 

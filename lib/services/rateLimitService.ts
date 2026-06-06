@@ -66,8 +66,8 @@ export async function isRateLimited(
 
     return count >= maxAttempts;
   } catch (error) {
-    console.error("Rate limit check failed, allowing request:", error);
-    return false;
+    console.error("Rate limit check failed:", error);
+    throw error;
   }
 }
 
@@ -90,7 +90,7 @@ export async function isAnalysisRunnerRateLimited(
     return count >= maxJobsPerMinute;
   } catch (error) {
     console.error("Analysis runner rate limit check failed:", error);
-    return false;
+    throw error;
   }
 }
 
@@ -112,7 +112,7 @@ export async function countAttempts(
     });
   } catch (error) {
     console.error("Rate limit count failed:", error);
-    return 0;
+    throw error;
   }
 }
 
@@ -135,6 +135,7 @@ export async function recordAttempt(params: {
     });
   } catch (error) {
     console.error("Failed to record rate limit attempt:", error);
+    throw error;
   }
 }
 
@@ -155,6 +156,7 @@ export async function recordAnalysisRunnerAttempt(
     });
   } catch (error) {
     console.error("Failed to record analysis runner attempt:", error);
+    throw error;
   }
 }
 
