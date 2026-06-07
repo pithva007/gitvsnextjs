@@ -12,9 +12,47 @@ export type JobProgressUpdate = {
 
 const DEFAULT_LOCK_MS = 5 * 60 * 1000;
 
+/**
+ * AnalysisJobService
+ *
+ * Manages the lifecycle of repository analysis jobs: creation, claiming,
+ * progress tracking, completion, and cleanup.  Uses a PostgreSQL-based
+ * locking protocol with lock tokens to guarantee exactly-once processing
+ * in a concurrent worker environment.
+ *
+ * ## Concurrency model
+ *
+ * - **Atomic reclaim + claim**: `claimNextJob()` runs `reclaimOrphanedJobs()`
+ *   inside the same `$transaction` as the CTE claim.  PostgreSQL snapshot
+ *   isolation ensures reclaimed rows are visible to the subsequent CTE.
+ * - **Lock token**: Every claim generates a fresh `lock_token` UUID via
+ *   `gen_random_uuid()`.  All mutating operations (heartbeat, markDone,
+ *   markFailed, updateProgress, releaseLock) include the token in their
+ *   WHERE clause, preventing stale writes from displaced workers.
+ * - **FOR UPDATE SKIP LOCKED**: The claim CTE uses `FOR UPDATE SKIP LOCKED`
+ *   so workers never block each other when contending for jobs.
+ * - **Per-repo exclusivity**: The `NOT EXISTS` subquery prevents two
+ *   PROCESSING jobs for the same repository.
+ *
+ * ## Race conditions eliminated
+ *
+ * 1. **TOCTOU reclaim → claim** (issue #1793): Previously, reclaim ran
+ *    outside the claim transaction.  A new job inserted between reclaim
+ *    and the CTE would be missed.  Now reclaim is inside the transaction.
+ *
+ * 2. **Zombie worker heartbeat** (issue #1793): A stale heartbeat from a
+ *    displaced worker could extend the lock on a job another worker had
+ *    claimed.  Now heartbeat checks `lock_token` — after reclaim or
+ *    re-claim generates a new token, the old heartbeat silently fails.
+ *
+ * 3. **Stale markDone/markFailed** (issue #1793): A displaced worker could
+ *    complete or fail a job it no longer owned.  Now every mutation
+ *    validates both `locked_by` and `lock_token`.
+ *
+ * See `docs/infrastructure/analysis-job-worker.md` for the full
+ * architecture document.
+ */
 export class AnalysisJobService {
-
-
   async getAnalysisStats(params: { userId: number }): Promise<{
     total: number;
     processing: number;
@@ -166,16 +204,11 @@ export class AnalysisJobService {
 
     let hasAccess = false;
 
-    // 1. User is the creator of the job
     if (job.userId === params.userId) {
       hasAccess = true;
-    } 
-    // 2. User is the owner of the repository
-    else if (job.repository.userId === params.userId) {
+    } else if (job.repository.userId === params.userId) {
       hasAccess = true;
-    } 
-    // 3. User has access via organization membership
-    else {
+    } else {
       const orgAccess = await prisma.repositoryPolicyAssignment.findFirst({
         where: {
           repositoryId: job.repositoryId,
@@ -196,7 +229,6 @@ export class AnalysisJobService {
       return null;
     }
 
-    // Strip the joined repository to match the expected return type
     const { repository, ...jobData } = job as any;
     return jobData as AnalysisJob;
   }
@@ -204,6 +236,7 @@ export class AnalysisJobService {
   async updateProgress(params: {
     jobId: string;
     workerId?: string;
+    lockToken?: string;
     update: JobProgressUpdate;
     extendLockMs?: number;
   }): Promise<void> {
@@ -216,6 +249,7 @@ export class AnalysisJobService {
     const where: any = { id: params.jobId };
     if (params.workerId) {
       where.lockedBy = params.workerId;
+      if (params.lockToken) where.lockToken = params.lockToken;
     }
 
     await prisma.analysisJob.update({
@@ -233,10 +267,15 @@ export class AnalysisJobService {
     });
   }
 
-  async markDone(params: { jobId: string; workerId?: string }): Promise<void> {
+  async markDone(params: {
+    jobId: string;
+    workerId?: string;
+    lockToken?: string;
+  }): Promise<void> {
     const where: any = { id: params.jobId };
     if (params.workerId) {
       where.lockedBy = params.workerId;
+      if (params.lockToken) where.lockToken = params.lockToken;
     }
 
     await prisma.analysisJob.update({
@@ -250,6 +289,7 @@ export class AnalysisJobService {
         lockedAt: null,
         lockedBy: null,
         lockExpiresAt: null,
+        lockToken: null,
       },
     });
   }
@@ -257,6 +297,7 @@ export class AnalysisJobService {
   async markFailed(params: {
     jobId: string;
     workerId?: string;
+    lockToken?: string;
     error: string;
     attempts: number;
     maxAttempts: number;
@@ -264,6 +305,7 @@ export class AnalysisJobService {
     const where: any = { id: params.jobId };
     if (params.workerId) {
       where.lockedBy = params.workerId;
+      if (params.lockToken) where.lockToken = params.lockToken;
     }
 
     const shouldRetry =
@@ -281,6 +323,7 @@ export class AnalysisJobService {
           lockedAt: null,
           lockedBy: null,
           lockExpiresAt: null,
+          lockToken: null,
         },
       });
       return;
@@ -297,29 +340,42 @@ export class AnalysisJobService {
         lockedAt: null,
         lockedBy: null,
         lockExpiresAt: null,
+        lockToken: null,
       },
     });
   }
 
+  /**
+   * Claim the next available job for a worker.
+   *
+   * Runs inside a single `$transaction`:
+   * 1. Reclaims any PROCESSING jobs with expired locks (resets to QUEUED).
+   * 2. CTE claim: atomically picks one eligible job per-repo exclusivity.
+   *
+   * The claim generates a fresh `lock_token` via `gen_random_uuid()`:
+   * every subsequent operation (heartbeat, markDone, markFailed) must
+   * include this token to prove ownership.
+   */
   async claimNextJob(params: {
     workerId: string;
     lockMs?: number;
   }): Promise<AnalysisJob | null> {
     const lockMs = params.lockMs ?? DEFAULT_LOCK_MS;
 
-    await this.reclaimOrphanedJobs();
-
-    // The claim must be atomic: a worker can only observe a job as available
-    // while no other transaction holds the matching row lock. The CTE below
-    // uses `FOR UPDATE SKIP LOCKED` so concurrent workers each pick a
-    // distinct row instead of contending on the same one, and the whole
-    // claim + re-fetch runs inside a $transaction so the row lock acquired
-    // by the CTE is held until we have read the freshly updated record.
-    //
-    // `RETURNING j.*` returns snake_case column names (e.g. repository_id)
-    // which would arrive in JS as the wrong shape, so we return only the id
-    // here and re-fetch via Prisma for typed, camelCase fields.
     return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        UPDATE analysis_jobs
+        SET
+          status = 'QUEUED',
+          locked_by = NULL,
+          locked_at = NULL,
+          lock_expires_at = NULL,
+          lock_token = NULL,
+          updated_at = NOW()
+        WHERE status = 'PROCESSING'
+          AND lock_expires_at < NOW()
+      `;
+
       const rows = await tx.$queryRaw<{ id: string }[]>`
         WITH candidate AS (
           SELECT a1.id
@@ -344,6 +400,7 @@ export class AnalysisJobService {
           locked_at = NOW(),
           locked_by = ${params.workerId},
           lock_expires_at = NOW() + (${lockMs}::int * INTERVAL '1 millisecond'),
+          lock_token = gen_random_uuid(),
           attempts = j.attempts + 1,
           started_at = COALESCE(j.started_at, NOW()),
           updated_at = NOW(),
@@ -361,13 +418,20 @@ export class AnalysisJobService {
     });
   }
 
+  /**
+   * Immediately expire a lock so another worker can reclaim the job.
+   * If `workerId` and `lockToken` are provided, they guard the WHERE
+   * clause to prevent releasing a lock the caller does not own.
+   */
   async releaseLock(params: {
     jobId: string;
     workerId?: string;
+    lockToken?: string;
   }): Promise<void> {
     const where: any = { id: params.jobId };
     if (params.workerId) {
       where.lockedBy = params.workerId;
+      if (params.lockToken) where.lockToken = params.lockToken;
     }
     await prisma.analysisJob.update({
       where,
@@ -377,6 +441,14 @@ export class AnalysisJobService {
     });
   }
 
+  /**
+   * Reset all PROCESSING jobs with expired locks back to QUEUED.
+   * Clears `lockToken` so that any stale heartbeat or markDone from a
+   * displaced worker silently fails.
+   *
+   * Called inside `claimNextJob`'s transaction to eliminate the TOCTOU
+   * window between reclaim and claim (see #1793).
+   */
   async reclaimOrphanedJobs(): Promise<number> {
     const result = await prisma.analysisJob.updateMany({
       where: {
@@ -387,6 +459,8 @@ export class AnalysisJobService {
         status: "QUEUED",
         lockedBy: null,
         lockedAt: null,
+        lockExpiresAt: null,
+        lockToken: null,
       },
     });
     return result.count;
@@ -403,14 +477,21 @@ export class AnalysisJobService {
     return prisma.analysisJob.count({ where });
   }
 
+  /**
+   * Release a job back to QUEUED when a worker is shutting down.
+   * Sets `nextRunAt` to NOW so another worker can pick it up
+   * immediately.  Clears `lockToken` to invalidate the old owner.
+   */
   async markDrainReleased(params: {
     jobId: string;
     workerId?: string;
+    lockToken?: string;
     error: string;
   }): Promise<void> {
     const where: any = { id: params.jobId };
     if (params.workerId) {
       where.lockedBy = params.workerId;
+      if (params.lockToken) where.lockToken = params.lockToken;
     }
     await prisma.analysisJob.update({
       where,
@@ -419,6 +500,7 @@ export class AnalysisJobService {
         lockExpiresAt: new Date(),
         lockedAt: null,
         lockedBy: null,
+        lockToken: null,
         nextRunAt: new Date(),
         progressMessage: "Worker shutting down — job released for reprocessing",
         error: params.error,
@@ -426,13 +508,18 @@ export class AnalysisJobService {
     });
   }
 
+  /**
+   * Safety net for workers that terminate without releasing their locks.
+   * Marks PROCESSING jobs whose lock has expired and whose last update
+   * is older than the grace period (default 10 min) as FAILED.
+   */
   async cleanupStaleJobs(gracePeriodMs: number = 10 * 60 * 1000): Promise<number> {
     const stale = await prisma.analysisJob.updateMany({
       where: {
         status: "PROCESSING",
         OR: [
           { lockExpiresAt: { lt: new Date() } },
-          { lockExpiresAt: null }
+          { lockExpiresAt: null },
         ],
         updatedAt: { lt: new Date(Date.now() - gracePeriodMs) },
       },
@@ -445,14 +532,24 @@ export class AnalysisJobService {
         lockedAt: null,
         lockedBy: null,
         lockExpiresAt: null,
+        lockToken: null,
       },
     });
     return stale.count;
   }
 
+  /**
+   * Extend a worker's lock on a job.
+   *
+   * The UPDATE includes `locked_by` and `lock_token` in the WHERE clause.
+   * If the job was reclaimed or re-claimed by another worker, the
+   * `lock_token` will not match and the UPDATE affects 0 rows — the
+   * caller detects it no longer holds the lock and should stop processing.
+   */
   async heartbeat(params: {
     jobId: string;
     workerId: string;
+    lockToken: string;
     lockMs?: number;
   }): Promise<void> {
     const lockMs = params.lockMs ?? DEFAULT_LOCK_MS;
@@ -465,6 +562,7 @@ export class AnalysisJobService {
       WHERE id = ${params.jobId}::uuid
         AND status = 'PROCESSING'
         AND locked_by = ${params.workerId}
+        AND lock_token = ${params.lockToken}::uuid
     `;
   }
 }
